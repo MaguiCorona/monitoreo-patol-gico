@@ -3,13 +3,8 @@
 ==================================================================================
  APP MULTIPROYECTO DE INSPECCIÓN Y MONITOREO PATOLÓGICO ESTRUCTURAL EDILICIO
 ==================================================================================
-Autor: Generado para uso en inspecciones de Ingeniería Civil
 Stack: Streamlit + Plotly + Pandas + Pillow + PyPDF2 / pdf2image + SQLite
-
-Ejecutar localmente:
-    streamlit run app.py
-
-Desplegar en Streamlit Community Cloud: ver instrucciones en README / chat.
+Incluye: Monitoreo de Fisuras, Humedades y Losas/Hormigón en Altura
 ==================================================================================
 """
 
@@ -31,7 +26,7 @@ except Exception:
     PDF2IMAGE_OK = False
 
 try:
-    import PyPDF2  # se usa para leer metadatos / cantidad de páginas del PDF
+    import PyPDF2
     PYPDF2_OK = True
 except Exception:
     PYPDF2_OK = False
@@ -55,23 +50,29 @@ PLANOS_DIR = os.path.join(BASE_DIR, "planos")
 os.makedirs(FOTOS_DIR, exist_ok=True)
 os.makedirs(PLANOS_DIR, exist_ok=True)
 
-# Línea de control según ACI 224R (fisuración admisible orientativa) en mm
 ACI_224R_LIMITE_MM = 0.30
 
-TIPOS_LESION = ["Fisura", "Grieta", "Humedad", "Desprendimiento", "Otra"]
+TIPOS_LESION = ["Fisura", "Grieta", "Humedad", "Losa / Hormigón en Altura", "Desprendimiento", "Otra"]
+TIPOS_LOSA = ["Maciza", "Alivianada / Viguetas", "Casetonada", "No aplica / Otro"]
+UBICACION_LOSA = ["Intradós (Cielorraso / Fondo)", "Extradós", "Nervaduras / Viguetas", "Borde de Losa"]
+SEVERIDAD_LOSA = {
+    "Grado 1 - Leve (Manchas / Fisuras superficiales)": 1,
+    "Grado 2 - Moderado (Manchas de óxido / Fisura en armadura)": 2,
+    "Grado 3 - Avanzado (Desprendimiento inicial / Armadura expuesta)": 3,
+    "Grado 4 - Severo (Desprendimiento masivo / Pérdida de sección)": 4,
+}
 ESTADOS_LESION = ["Activa", "Aparentemente Estabilizada"]
 INCIDENCIAS = ["Sin incidencia aparente", "Leve", "Moderada", "Alta / Compromiso estructural"]
 CONDICIONES_AMBIENTALES = ["Interior seco", "Interior húmedo", "Exterior expuesto",
                             "Exterior con humedad permanente", "Zona con vibraciones", "Otra"]
 
-# Credenciales de acceso (para producción real, mover a st.secrets)
 USUARIOS_VALIDOS = {
     "iafas_admin": "Mantenimiento2026",
 }
 
 
 # ==================================================================================
-# BASE DE DATOS
+# BASE DE DATOS Y MIGRACIÓN AUTOMÁTICA
 # ==================================================================================
 
 def get_conn():
@@ -113,6 +114,7 @@ def init_db():
             ubicacion_especifica TEXT,
             x_pct REAL,
             y_pct REAL,
+            tipo_categoria TEXT,
             creado_en TEXT,
             FOREIGN KEY (proyecto_id) REFERENCES proyectos(id),
             FOREIGN KEY (plano_id) REFERENCES planos(id)
@@ -136,6 +138,12 @@ def init_db():
             descripcion TEXT,
             observaciones TEXT,
             foto_path TEXT,
+            tipo_losa TEXT,
+            ubicacion_losa TEXT,
+            manifestaciones_losa TEXT,
+            obs_losa TEXT,
+            grado_severidad_losa INTEGER,
+            superficie_afectada_pct TEXT,
             creado_en TEXT,
             FOREIGN KEY (punto_id) REFERENCES puntos(id)
         )
@@ -158,11 +166,33 @@ def init_db():
         )
     """)
 
+    # Migración automática de columnas en puntos e inspecciones
+    cur.execute("PRAGMA table_info(puntos)")
+    cols_puntos = [col[1] for col in cur.fetchall()]
+    if "tipo_categoria" not in cols_puntos:
+        cur.execute("ALTER TABLE puntos ADD COLUMN tipo_categoria TEXT")
+
+    cur.execute("PRAGMA table_info(inspecciones)")
+    cols_insp = [col[1] for col in cur.fetchall()]
+    
+    nuevas_columnas = {
+        "tipo_losa": "TEXT",
+        "ubicacion_losa": "TEXT",
+        "manifestaciones_losa": "TEXT",
+        "obs_losa": "TEXT",
+        "grado_severidad_losa": "INTEGER",
+        "superficie_afectada_pct": "TEXT"
+    }
+
+    for col, tipo in nuevas_columnas.items():
+        if col not in cols_insp:
+            cur.execute(f"ALTER TABLE inspecciones ADD COLUMN {col} {tipo}")
+
     conn.commit()
     conn.close()
 
 
-# ---------- helpers de acceso a datos ----------
+# ---------- Helpers de acceso a datos ----------
 
 def listar_proyectos():
     conn = get_conn()
@@ -221,13 +251,13 @@ def listar_puntos(proyecto_id, plano_id=None):
     return df
 
 
-def crear_punto(proyecto_id, plano_id, etiqueta, ubicacion, x_pct, y_pct):
+def crear_punto(proyecto_id, plano_id, etiqueta, ubicacion, x_pct, y_pct, tipo_categoria):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO puntos (proyecto_id, plano_id, etiqueta, ubicacion_especifica, x_pct, y_pct, creado_en)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (proyecto_id, plano_id, etiqueta, ubicacion, x_pct, y_pct, dt.datetime.now().isoformat()))
+        INSERT INTO puntos (proyecto_id, plano_id, etiqueta, ubicacion_especifica, x_pct, y_pct, tipo_categoria, creado_en)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (proyecto_id, plano_id, etiqueta, ubicacion, x_pct, y_pct, tipo_categoria, dt.datetime.now().isoformat()))
     conn.commit()
     punto_id = cur.lastrowid
     conn.close()
@@ -241,14 +271,18 @@ def crear_inspeccion(datos):
         INSERT INTO inspecciones (
             punto_id, fecha, tipo_lesion, ancho_mm, longitud_m, area_m2, extension,
             estado, incidencia_estructural, condiciones_ambientales, intervenciones_previas,
-            descripcion, observaciones, foto_path, creado_en
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            descripcion, observaciones, foto_path, tipo_losa, ubicacion_losa,
+            manifestaciones_losa, obs_losa, grado_severidad_losa, superficie_afectada_pct, creado_en
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         datos["punto_id"], datos["fecha"], datos["tipo_lesion"], datos["ancho_mm"],
         datos["longitud_m"], datos["area_m2"], datos["extension"], datos["estado"],
         datos["incidencia_estructural"], datos["condiciones_ambientales"],
         datos["intervenciones_previas"], datos["descripcion"], datos["observaciones"],
-        datos["foto_path"], dt.datetime.now().isoformat(),
+        datos["foto_path"], datos.get("tipo_losa", ""), datos.get("ubicacion_losa", ""),
+        datos.get("manifestaciones_losa", ""), datos.get("obs_losa", ""),
+        datos.get("grado_severidad_losa", 0), datos.get("superficie_afectada_pct", ""),
+        dt.datetime.now().isoformat(),
     ))
     conn.commit()
     conn.close()
@@ -257,7 +291,7 @@ def crear_inspeccion(datos):
 def listar_inspecciones(proyecto_id):
     conn = get_conn()
     df = pd.read_sql_query("""
-        SELECT i.*, p.etiqueta AS punto_etiqueta, p.ubicacion_especifica
+        SELECT i.*, p.etiqueta AS punto_etiqueta, p.ubicacion_especifica, p.tipo_categoria AS punto_categoria
         FROM inspecciones i
         JOIN puntos p ON p.id = i.punto_id
         WHERE p.proyecto_id = ?
@@ -295,7 +329,7 @@ def listar_informes(proyecto_id):
 
 
 # ==================================================================================
-# UTILIDADES DE ARCHIVOS: PLANOS (PDF/IMG) Y FOTOS
+# UTILIDADES DE ARCHIVOS
 # ==================================================================================
 
 def slugify(texto):
@@ -326,29 +360,16 @@ def guardar_archivo_foto(uploaded_file, proyecto_nombre, etiqueta_punto):
 
 @st.cache_data(show_spinner=False)
 def cargar_imagen_desde_ruta(ruta_archivo):
-    """
-    Convierte el archivo de plano (PDF o imagen) en un objeto PIL.Image.
-    Se cachea por ruta de archivo para evitar reconversiones costosas de PDF.
-    """
     ext = os.path.splitext(ruta_archivo)[1].lower()
-
     if ext == ".pdf":
         with open(ruta_archivo, "rb") as f:
             pdf_bytes = f.read()
-
         if not PDF2IMAGE_OK:
-            raise RuntimeError(
-                "pdf2image / poppler no está disponible en este entorno. "
-                "Agregá 'poppler-utils' a packages.txt para desplegar en Streamlit Cloud."
-            )
-
+            raise RuntimeError("pdf2image / poppler no disponible.")
         paginas = convert_from_bytes(pdf_bytes, dpi=150, first_page=1, last_page=1)
-        imagen = paginas[0].convert("RGB")
-        return imagen
-
+        return paginas[0].convert("RGB")
     else:
-        imagen = Image.open(ruta_archivo).convert("RGB")
-        return imagen
+        return Image.open(ruta_archivo).convert("RGB")
 
 
 def imagen_a_data_uri(imagen: Image.Image) -> str:
@@ -363,76 +384,82 @@ def imagen_a_data_uri(imagen: Image.Image) -> str:
 # ==================================================================================
 
 def construir_figura_plano(imagen: Image.Image, puntos_df: pd.DataFrame, punto_resaltado_id=None):
-    """Arma la figura de Plotly con el plano de fondo y los puntos geolocalizados."""
     ancho, alto = imagen.size
     data_uri = imagen_a_data_uri(imagen)
 
     fig = go.Figure()
-
     fig.add_layout_image(
         dict(
-            source=data_uri,
-            xref="x", yref="y",
-            x=0, y=alto,
-            sizex=ancho, sizey=alto,
-            sizing="stretch",
-            layer="below",
+            source=data_uri, xref="x", yref="y",
+            x=0, y=alto, sizex=ancho, sizey=alto,
+            sizing="stretch", layer="below",
         )
     )
 
     if puntos_df is not None and not puntos_df.empty:
         xs = puntos_df["x_pct"] / 100.0 * ancho
-        ys = alto - (puntos_df["y_pct"] / 100.0 * alto)  # invertir eje Y (imagen vs plotly)
-        colores = [
-            "#e74c3c" if pid == punto_resaltado_id else "#2980b9"
-            for pid in puntos_df["id"]
-        ]
+        ys = alto - (puntos_df["y_pct"] / 100.0 * alto)
+        
+        colores = []
+        for _, p in puntos_df.iterrows():
+            if p["id"] == punto_resaltado_id:
+                colores.append("#e74c3c")
+            elif p.get("tipo_categoria") == "Losa / Hormigón en Altura":
+                colores.append("#e67e22")
+            elif p.get("tipo_categoria") == "Humedad":
+                colores.append("#3498db")
+            else:
+                colores.append("#2ecc71")
+
+        textos = puntos_df["etiqueta"]
+        hover_text = puntos_df["ubicacion_especifica"].fillna("") + " [" + puntos_df["tipo_categoria"].fillna("General") + "]"
+
         fig.add_trace(go.Scatter(
-            x=xs, y=ys,
-            mode="markers+text",
+            x=xs, y=ys, mode="markers+text",
             marker=dict(size=16, color=colores, line=dict(width=2, color="white")),
-            text=puntos_df["etiqueta"],
-            textposition="top center",
-            hovertext=puntos_df["ubicacion_especifica"],
-            hoverinfo="text+x+y",
-            name="Puntos de inspección",
+            text=textos, textposition="top center",
+            hovertext=hover_text, hoverinfo="text+x+y",
         ))
 
     fig.update_xaxes(visible=False, range=[0, ancho])
     fig.update_yaxes(visible=False, range=[0, alto], scaleanchor="x", scaleratio=1)
-    fig.update_layout(
-        margin=dict(l=0, r=0, t=0, b=0),
-        height=650,
-        showlegend=False,
-        dragmode="pan",
-    )
+    fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=650, showlegend=False, dragmode="pan")
     return fig
 
 
 def construir_grafico_evolucion(df_punto: pd.DataFrame, etiqueta_punto: str):
     df_punto = df_punto.sort_values("fecha")
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=df_punto["fecha"], y=df_punto["ancho_mm"],
-        mode="lines+markers",
-        name="Ancho de fisura (mm)",
-        line=dict(color="#2980b9", width=3),
-        marker=dict(size=9),
-    ))
-    fig.add_hline(
-        y=ACI_224R_LIMITE_MM,
-        line_dash="dash",
-        line_color="#e74c3c",
-        annotation_text=f"Límite orientativo ACI 224R ({ACI_224R_LIMITE_MM} mm)",
-        annotation_position="top left",
-    )
-    fig.update_layout(
-        title=f"Evolución temporal — {etiqueta_punto}",
-        xaxis_title="Fecha de inspección",
-        yaxis_title="Ancho de fisura (mm)",
-        height=420,
-        margin=dict(l=40, r=20, t=60, b=40),
-    )
+
+    es_losa = "Losa" in df_punto["tipo_lesion"].values or (df_punto["grado_severidad_losa"].sum() > 0)
+
+    if es_losa:
+        fig.add_trace(go.Scatter(
+            x=df_punto["fecha"], y=df_punto["grado_severidad_losa"],
+            mode="lines+markers", name="Grado de Severidad Visual (1-4)",
+            line=dict(color="#e67e22", width=3), marker=dict(size=10),
+        ))
+        fig.update_layout(
+            title=f"Evolución de Severidad Visual — {etiqueta_punto}",
+            xaxis_title="Fecha de inspección",
+            yaxis_title="Grado de Severidad (1: Leve a 4: Severo)",
+            yaxis=dict(dtick=1, range=[0.5, 4.5]), height=420,
+        )
+    else:
+        fig.add_trace(go.Scatter(
+            x=df_punto["fecha"], y=df_punto["ancho_mm"],
+            mode="lines+markers", name="Ancho de fisura (mm)",
+            line=dict(color="#2980b9", width=3), marker=dict(size=9),
+        ))
+        fig.add_hline(
+            y=ACI_224R_LIMITE_MM, line_dash="dash", line_color="#e74c3c",
+            annotation_text=f"Límite ACI 224R ({ACI_224R_LIMITE_MM} mm)",
+        )
+        fig.update_layout(
+            title=f"Evolución temporal — {etiqueta_punto}",
+            xaxis_title="Fecha de inspección", yaxis_title="Ancho de fisura (mm)",
+            height=420,
+        )
     return fig
 
 
@@ -465,14 +492,12 @@ def cerrar_sesion():
 
 
 # ==================================================================================
-# SELECTOR / CREADOR DE PROYECTOS (SIDEBAR)
+# SELECTOR DE PROYECTOS (SIDEBAR)
 # ==================================================================================
 
 def panel_proyectos():
     st.sidebar.header("📁 Proyecto")
-
     proyectos_df = listar_proyectos()
-
     opciones = ["— Seleccionar proyecto —"] + proyectos_df["nombre"].tolist() if not proyectos_df.empty else ["— Seleccionar proyecto —"]
     seleccion = st.sidebar.selectbox("Proyecto activo", opciones)
 
@@ -496,7 +521,7 @@ def panel_proyectos():
                 st.warning("Ingresá un nombre para el proyecto.")
 
     st.sidebar.markdown("---")
-    st.sidebar.caption(f"Usuario conectado: **{st.session_state.get('usuario', '')}**")
+    st.sidebar.caption(f"Usuario: **{st.session_state.get('usuario', '')}**")
     if st.sidebar.button("Cerrar sesión"):
         cerrar_sesion()
 
@@ -510,10 +535,7 @@ def tab_plano_y_puntos(proyecto_id, proyecto_nombre):
 
     col_upload, col_info = st.columns([2, 1])
     with col_upload:
-        archivo_plano = st.file_uploader(
-            "Subir plano (PDF, PNG o JPG)", type=["pdf", "png", "jpg", "jpeg"],
-            key="uploader_plano",
-        )
+        archivo_plano = st.file_uploader("Subir plano (PDF, PNG o JPG)", type=["pdf", "png", "jpg", "jpeg"], key="uploader_plano")
         if archivo_plano is not None:
             if st.button("Guardar este plano en el proyecto"):
                 ruta = guardar_archivo_plano(archivo_plano, proyecto_nombre)
@@ -528,10 +550,7 @@ def tab_plano_y_puntos(proyecto_id, proyecto_nombre):
 
     with col_info:
         nombres_planos = planos_df["nombre"] + " (" + planos_df["subido_en"].str.slice(0, 10) + ")"
-        idx_sel = st.selectbox(
-            "Plano activo", range(len(planos_df)),
-            format_func=lambda i: nombres_planos.iloc[i],
-        )
+        idx_sel = st.selectbox("Plano activo", range(len(planos_df)), format_func=lambda i: nombres_planos.iloc[i])
         plano_actual = planos_df.iloc[idx_sel]
         st.session_state["plano_id"] = int(plano_actual["id"])
 
@@ -542,26 +561,17 @@ def tab_plano_y_puntos(proyecto_id, proyecto_nombre):
         return
 
     puntos_df = listar_puntos(proyecto_id, plano_id=int(plano_actual["id"]))
-
     fig = construir_figura_plano(imagen, puntos_df)
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("#### ➕ Agregar nuevo punto de inspección")
-    st.caption(
-        "Ubicá el punto indicando su posición relativa sobre el plano (en % del ancho y alto). "
-        "El marcador de vista previa se actualiza abajo antes de guardar."
-    )
-
     col1, col2 = st.columns(2)
     with col1:
         x_pct = st.slider("Posición horizontal (%)", 0.0, 100.0, 50.0, step=0.5, key="x_pct_nuevo")
     with col2:
         y_pct = st.slider("Posición vertical (%)", 0.0, 100.0, 50.0, step=0.5, key="y_pct_nuevo")
 
-    preview_df = pd.DataFrame([{
-        "id": -1, "etiqueta": "Nuevo punto", "ubicacion_especifica": "",
-        "x_pct": x_pct, "y_pct": y_pct,
-    }])
+    preview_df = pd.DataFrame([{"id": -1, "etiqueta": "Nuevo punto", "ubicacion_especifica": "", "x_pct": x_pct, "y_pct": y_pct, "tipo_categoria": "General"}])
     if not puntos_df.empty:
         preview_df = pd.concat([puntos_df, preview_df], ignore_index=True)
 
@@ -569,21 +579,26 @@ def tab_plano_y_puntos(proyecto_id, proyecto_nombre):
     st.plotly_chart(fig_preview, use_container_width=True, key="preview_plot")
 
     with st.form("form_nuevo_punto"):
-        etiqueta = st.text_input("Etiqueta / identificador del punto (ej. F-01, Muro Norte)")
-        ubicacion = st.text_input("Ubicación específica (ej. Planta baja, muro perimetral este)")
+        c_p1, c_p2 = st.columns(2)
+        with c_p1:
+            etiqueta = st.text_input("Etiqueta / ID (ej. F-01, Losa L-02, Humedad H-01)")
+            ubicacion = st.text_input("Ubicación específica (ej. Cielorraso sector Tesorería)")
+        with c_p2:
+            tipo_cat = st.selectbox("Categoría Principal del Punto", TIPOS_LESION)
+        
         crear = st.form_submit_button("Guardar punto en el plano")
 
     if crear:
         if etiqueta.strip():
-            crear_punto(proyecto_id, int(plano_actual["id"]), etiqueta.strip(), ubicacion.strip(), x_pct, y_pct)
-            st.success(f"Punto '{etiqueta}' creado correctamente.")
+            crear_punto(proyecto_id, int(plano_actual["id"]), etiqueta.strip(), ubicacion.strip(), x_pct, y_pct, tipo_cat)
+            st.success(f"Punto '{etiqueta}' ({tipo_cat}) creado correctamente.")
             st.rerun()
         else:
             st.warning("La etiqueta del punto es obligatoria.")
 
 
 # ==================================================================================
-# TAB 2: NUEVA INSPECCIÓN (FICHA PATOLÓGICA)
+# TAB 2: NUEVA INSPECCIÓN (FICHA COMPLETA Y LOSAS)
 # ==================================================================================
 
 def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
@@ -594,22 +609,74 @@ def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
         st.info("Primero creá al menos un punto de inspección en la pestaña 'Plano y Puntos'.")
         return
 
-    etiquetas = puntos_df["etiqueta"] + " — " + puntos_df["ubicacion_especifica"].fillna("")
+    etiquetas = puntos_df["etiqueta"] + " [" + puntos_df["tipo_categoria"].fillna("General") + "] — " + puntos_df["ubicacion_especifica"].fillna("")
     idx_sel = st.selectbox("Punto a inspeccionar", range(len(puntos_df)), format_func=lambda i: etiquetas.iloc[i])
     punto_sel = puntos_df.iloc[idx_sel]
 
+    cat_defecto = punto_sel.get("tipo_categoria", "Fisura")
+    if cat_defecto not in TIPOS_LESION:
+        cat_defecto = "Fisura"
+
     with st.form("form_inspeccion", clear_on_submit=True):
-        st.markdown("##### Datos generales")
+        st.markdown("##### Datos generales de la lesión")
         c1, c2 = st.columns(2)
         with c1:
             fecha = st.date_input("Fecha de inspección", value=dt.date.today())
-            tipo_lesion = st.selectbox("Tipo de lesión", TIPOS_LESION)
-            ancho_mm = st.number_input("Ancho (mm)", min_value=0.0, step=0.01, format="%.2f")
+            tipo_lesion = st.selectbox("Tipo de lesión / elemento", TIPOS_LESION, index=TIPOS_LESION.index(cat_defecto))
+            ancho_mm = st.number_input("Ancho de fisura (mm) - Opcional", min_value=0.0, step=0.01, format="%.2f")
         with c2:
-            longitud_m = st.number_input("Longitud (m)", min_value=0.0, step=0.01, format="%.2f")
-            area_m2 = st.number_input("Área (m²)", min_value=0.0, step=0.01, format="%.2f")
-            extension = st.text_input("Extensión (descripción, ej. 'de piso a techo')")
+            longitud_m = st.number_input("Longitud (m) - Opcional", min_value=0.0, step=0.01, format="%.2f")
+            area_m2 = st.number_input("Área afectada (m²) - Opcional", min_value=0.0, step=0.01, format="%.2f")
+            extension = st.text_input("Extensión (ej. 'Toda la luz de la losa')")
 
+        # MÓDULO ESPECÍFICO PARA LOSAS / HORMIGÓN EN ALTURA
+        tipo_losa = ""
+        ubicacion_losa = ""
+        manifestaciones_str = ""
+        obs_losa = ""
+        grado_sev_num = 0
+        sup_afectada_pct = ""
+
+        if tipo_lesion in ["Losa / Hormigón en Altura", "Desprendimiento"]:
+            st.markdown("---")
+            st.markdown("##### 🧱 Relevamiento Específico de Losas / Elementos en Altura")
+            
+            c_l1, c_l2 = st.columns(2)
+            with c_l1:
+                tipo_losa = st.selectbox("Tipo de Losa", TIPOS_LOSA)
+                ubicacion_losa = st.selectbox("Ubicación en el elemento", UBICACION_LOSA)
+                sup_afectada_pct = st.selectbox("Superficie visual afectada (%)", ["< 10%", "10% - 30%", "30% - 60%", "> 60%"])
+            
+            with c_l2:
+                sev_label = st.selectbox("Grado de Severidad Visual", list(SEVERIDAD_LOSA.keys()))
+                grado_sev_num = SEVERIDAD_LOSA[sev_label]
+            
+            st.write("**Manifestaciones observadas (Marque todas las que correspondan):**")
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                ch_desprendimiento = st.checkbox("Desprendimiento de recubrimiento")
+                ch_armadura = st.checkbox("Armadura expuesta")
+            with m2:
+                ch_oxido = st.checkbox("Oxidación / Manchas de óxido")
+                ch_fisuras_paralelas = st.checkbox("Fisuras paralelas a la armadura")
+            with m3:
+                ch_fisuras_perp = st.checkbox("Fisuras perpendiculares a la armadura")
+                ch_eflorescencias = st.checkbox("Eflorescencias / Filtración")
+                ch_flecha = st.checkbox("Deflexión / Flecha visible")
+
+            manifestaciones_lista = []
+            if ch_desprendimiento: manifestaciones_lista.append("Desprendimiento recubrimiento")
+            if ch_armadura: manifestaciones_lista.append("Armadura expuesta")
+            if ch_oxido: manifestaciones_lista.append("Oxidación/Corrosión")
+            if ch_fisuras_paralelas: manifestaciones_lista.append("Fisuras paralelas a armadura")
+            if ch_fisuras_perp: manifestaciones_lista.append("Fisuras perpendiculares a armadura")
+            if ch_eflorescencias: manifestaciones_lista.append("Eflorescencias")
+            if ch_flecha: manifestaciones_lista.append("Deflexión visible")
+            manifestaciones_str = ", ".join(manifestaciones_lista)
+
+            obs_losa = st.text_area("Observaciones específicas de la losa (detalles adicionales no contemplados)", height=80)
+
+        st.markdown("---")
         st.markdown("##### Estado y entorno")
         c3, c4 = st.columns(2)
         with c3:
@@ -617,14 +684,12 @@ def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
             incidencia = st.selectbox("Incidencia estructural aparente", INCIDENCIAS)
         with c4:
             condiciones = st.selectbox("Condiciones ambientales", CONDICIONES_AMBIENTALES)
-            intervenciones = st.text_input("Intervenciones previas (si las hubo)")
+            intervenciones = st.text_input("Intervenciones previas")
 
-        st.markdown("##### Descripción")
-        descripcion = st.text_area("Descripción general (corta y concisa)", height=80)
-        observaciones = st.text_area("Observaciones libres", height=100)
-
-        st.markdown("##### Registro fotográfico")
-        foto = st.file_uploader("Foto de inspección semanal", type=["png", "jpg", "jpeg"])
+        st.markdown("##### Descripción y Registro Fotográfico")
+        descripcion = st.text_area("Descripción general corta", height=70)
+        observaciones = st.text_area("Observaciones libres", height=90)
+        foto = st.file_uploader("Foto de inspección (Recomendado foto con zoom para losas)", type=["png", "jpg", "jpeg"])
 
         enviar = st.form_submit_button("Guardar inspección", use_container_width=True)
 
@@ -648,6 +713,12 @@ def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
             "descripcion": descripcion,
             "observaciones": observaciones,
             "foto_path": foto_path,
+            "tipo_losa": tipo_losa,
+            "ubicacion_losa": ubicacion_losa,
+            "manifestaciones_losa": manifestaciones_str,
+            "obs_losa": obs_losa,
+            "grado_severidad_losa": grado_sev_num,
+            "superficie_afectada_pct": sup_afectada_pct,
         }
         crear_inspeccion(datos)
         st.success(f"Inspección registrada para el punto '{punto_sel['etiqueta']}'.")
@@ -658,18 +729,30 @@ def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
 # ==================================================================================
 
 def tab_evolucion(proyecto_id):
-    st.subheader("📈 Evolución temporal por punto")
+    st.subheader("📈 Evolución temporal por punto y afectación")
 
     inspecciones_df = listar_inspecciones(proyecto_id)
     if inspecciones_df.empty:
         st.info("Todavía no hay inspecciones registradas en este proyecto.")
         return
 
-    puntos_unicos = inspecciones_df[["punto_id", "punto_etiqueta"]].drop_duplicates()
-    idx_sel = st.selectbox(
-        "Seleccioná el punto a analizar", range(len(puntos_unicos)),
-        format_func=lambda i: puntos_unicos["punto_etiqueta"].iloc[i],
-    )
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        filtro_tipo = st.selectbox("Filtrar por tipo de lesión", ["Todas"] + TIPOS_LESION)
+    
+    if filtro_tipo != "Todas":
+        inspecciones_df = inspecciones_df[inspecciones_df["tipo_lesion"] == filtro_tipo]
+
+    if inspecciones_df.empty:
+        st.info(f"No hay inspecciones registradas para el tipo de lesión '{filtro_tipo}'.")
+        return
+
+    puntos_unicos = inspecciones_df[["punto_id", "punto_etiqueta", "punto_categoria"]].drop_duplicates()
+    
+    with col_f2:
+        etiquetas_p = puntos_unicos["punto_etiqueta"] + " [" + puntos_unicos["punto_categoria"].fillna("General") + "]"
+        idx_sel = st.selectbox("Seleccioná el punto a analizar", range(len(puntos_unicos)), format_func=lambda i: etiquetas_p.iloc[i])
+    
     punto_id_sel = int(puntos_unicos["punto_id"].iloc[idx_sel])
     etiqueta_sel = puntos_unicos["punto_etiqueta"].iloc[idx_sel]
 
@@ -679,9 +762,15 @@ def tab_evolucion(proyecto_id):
     fig = construir_grafico_evolucion(df_punto, etiqueta_sel)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("##### Historial fotográfico cronológico")
+    st.markdown("##### Historial fotográfico y clínico cronológico")
     for _, fila in df_punto.sort_values("fecha", ascending=False).iterrows():
-        with st.expander(f"{fila['fecha'].date()} — {fila['tipo_lesion']} ({fila['ancho_mm']} mm)"):
+        titulo_exp = f"{fila['fecha'].date()} — {fila['tipo_lesion']}"
+        if fila.get("grado_severidad_losa", 0) > 0:
+            titulo_exp += f" (Grado Severidad Visual: {fila['grado_severidad_losa']}/4)"
+        elif fila['ancho_mm'] > 0:
+            titulo_exp += f" ({fila['ancho_mm']} mm)"
+
+        with st.expander(titulo_exp):
             c1, c2 = st.columns([1, 2])
             with c1:
                 if fila["foto_path"] and os.path.exists(fila["foto_path"]):
@@ -689,10 +778,14 @@ def tab_evolucion(proyecto_id):
                 else:
                     st.caption("Sin foto asociada.")
             with c2:
-                st.write(f"**Estado:** {fila['estado']}")
-                st.write(f"**Incidencia estructural:** {fila['incidencia_estructural']}")
-                st.write(f"**Condiciones ambientales:** {fila['condiciones_ambientales']}")
-                st.write(f"**Intervenciones previas:** {fila['intervenciones_previas']}")
+                if fila.get("tipo_losa"):
+                    st.write(f"**Tipo de Losa:** {fila['tipo_losa']} | **Ubicación:** {fila['ubicacion_losa']}")
+                    st.write(f"**Manifestaciones:** {fila['manifestaciones_losa']}")
+                    if fila.get("obs_losa"):
+                        st.write(f"**Obs. Losa:** {fila['obs_losa']}")
+                    st.write(f"**Superficie afectada est.:** {fila['superficie_afectada_pct']}")
+                st.write(f"**Estado:** {fila['estado']} | **Incidencia:** {fila['incidencia_estructural']}")
+                st.write(f"**Condiciones:** {fila['condiciones_ambientales']}")
                 st.write(f"**Descripción:** {fila['descripcion']}")
                 st.write(f"**Observaciones:** {fila['observaciones']}")
 
@@ -709,41 +802,26 @@ def tab_tabla_exportacion(proyecto_id, proyecto_nombre):
         st.info("Todavía no hay inspecciones registradas en este proyecto.")
         return
 
+    cols_existentes = inspecciones_df.columns.tolist()
     columnas_mostrar = [
         "fecha", "punto_etiqueta", "ubicacion_especifica", "tipo_lesion",
-        "ancho_mm", "longitud_m", "area_m2", "extension", "estado",
-        "incidencia_estructural", "condiciones_ambientales", "intervenciones_previas",
-        "descripcion", "observaciones",
+        "ancho_mm", "grado_severidad_losa", "manifestaciones_losa", "obs_losa", "superficie_afectada_pct",
+        "estado", "incidencia_estructural", "descripcion", "observaciones",
     ]
-    df_mostrar = inspecciones_df[columnas_mostrar].rename(columns={
-        "fecha": "Fecha", "punto_etiqueta": "Punto", "ubicacion_especifica": "Ubicación específica",
-        "tipo_lesion": "Tipo de lesión", "ancho_mm": "Ancho (mm)", "longitud_m": "Longitud (m)",
-        "area_m2": "Área (m²)", "extension": "Extensión", "estado": "Estado",
-        "incidencia_estructural": "Incidencia estructural", "condiciones_ambientales": "Condiciones ambientales",
-        "intervenciones_previas": "Intervenciones previas", "descripcion": "Descripción",
-        "observaciones": "Observaciones",
-    })
+    columnas_validas = [c for c in columnas_mostrar if c in cols_existentes]
+    df_mostrar = inspecciones_df[columnas_validas]
 
     st.dataframe(df_mostrar, use_container_width=True, height=450)
 
     col_csv, col_xlsx = st.columns(2)
     with col_csv:
         csv_bytes = df_mostrar.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "⬇️ Descargar CSV", data=csv_bytes,
-            file_name=f"planilla_{slugify(proyecto_nombre)}.csv",
-            mime="text/csv", use_container_width=True,
-        )
+        st.download_button("⬇️ Descargar CSV", data=csv_bytes, file_name=f"planilla_{slugify(proyecto_nombre)}.csv", mime="text/csv", use_container_width=True)
     with col_xlsx:
         buffer_xlsx = io.BytesIO()
         with pd.ExcelWriter(buffer_xlsx, engine="xlsxwriter") as writer:
-            df_mostrar.to_excel(writer, index=False, sheet_name="Inspecciones")
-        st.download_button(
-            "⬇️ Descargar Excel", data=buffer_xlsx.getvalue(),
-            file_name=f"planilla_{slugify(proyecto_nombre)}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
+            inspecciones_df.to_excel(writer, index=False, sheet_name="Inspecciones")
+        st.download_button("⬇️ Descargar Excel Completo", data=buffer_xlsx.getvalue(), file_name=f"planilla_{slugify(proyecto_nombre)}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
 
 # ==================================================================================
@@ -791,10 +869,10 @@ def tab_informe_tecnico(proyecto_id, proyecto_nombre):
     else:
         for _, fila in informes_df.iterrows():
             with st.expander(f"{fila['titulo']} — {fila['creado_en'][:10]}"):
-                st.write(f"**Diagnóstico e hipótesis de origen:** {fila['diagnostico']}")
-                st.write(f"**Evaluación de gravedad y riesgo:** {fila['gravedad_riesgo']}")
+                st.write(f"**Diagnóstico:** {fila['diagnostico']}")
+                st.write(f"**Gravedad y riesgo:** {fila['gravedad_riesgo']}")
                 st.write(f"**Estado de actividad:** {fila['estado_actividad']}")
-                st.write(f"**Pronóstico sin intervención:** {fila['pronostico']}")
+                st.write(f"**Pronóstico:** {fila['pronostico']}")
                 st.write(f"**Propuesta de solución:** {fila['propuesta_solucion']}")
 
 
