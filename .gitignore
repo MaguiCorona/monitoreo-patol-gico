@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+patologias.db
+fotos_inspecciones/
+planos/
+.streamlit/secrets.toml
