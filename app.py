@@ -2,22 +2,20 @@
 """
 ==================================================================================
  APP MULTIPROYECTO DE INSPECCIÓN Y MONITOREO PATOLÓGICO ESTRUCTURAL EDILICIO
-==================================================================================
-Stack: Streamlit + Plotly + Pandas + Pillow + PyPDF2 / pdf2image + SQLite
-Incluye: Semáforo de Riesgos + Planilla Excel Cotizable de Orden de Trabajo
+ Integrada con Supabase (Nube Persistente: DB PostgreSQL + Storage Buckets)
 ==================================================================================
 """
 
 import os
 import io
 import base64
-import sqlite3
 import datetime as dt
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from PIL import Image
+from supabase import create_client, Client
 
 try:
     from pdf2image import convert_from_bytes
@@ -25,15 +23,8 @@ try:
 except Exception:
     PDF2IMAGE_OK = False
 
-try:
-    import PyPDF2
-    PYPDF2_OK = True
-except Exception:
-    PYPDF2_OK = False
-
-
 # ==================================================================================
-# CONFIGURACIÓN GENERAL Y RUTAS
+# CONFIGURACIÓN GENERAL Y CONEXIÓN A SUPABASE
 # ==================================================================================
 
 st.set_page_config(
@@ -42,13 +33,16 @@ st.set_page_config(
     layout="wide",
 )
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "patologias.db")
-FOTOS_DIR = os.path.join(BASE_DIR, "fotos_inspecciones")
-PLANOS_DIR = os.path.join(BASE_DIR, "planos")
+@st.cache_resource
+def init_supabase() -> Client:
+    url = st.secrets.get("SUPABASE_URL")
+    key = st.secrets.get("SUPABASE_KEY")
+    if not url or not key:
+        st.error("⚠️ Falta configurar SUPABASE_URL y SUPABASE_KEY en los Secrets de Streamlit.")
+        st.stop()
+    return create_client(url, key)
 
-os.makedirs(FOTOS_DIR, exist_ok=True)
-os.makedirs(PLANOS_DIR, exist_ok=True)
+supabase = init_supabase()
 
 ACI_224R_LIMITE_MM = 0.30
 
@@ -70,260 +64,86 @@ USUARIOS_VALIDOS = {
     "iafas_admin": "Mantenimiento2026",
 }
 
-
 # ==================================================================================
-# BASE DE DATOS Y MIGRACIÓN AUTOMÁTICA
+# FUNCIONES BASE DE DATOS (SUPABASE)
 # ==================================================================================
 
-def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.execute("PRAGMA foreign_keys = ON;")
-    return conn
+def slugify(texto):
+    return "".join(c if c.isalnum() else "_" for c in texto).strip("_")
 
-
-def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS proyectos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nombre TEXT UNIQUE NOT NULL,
-            descripcion TEXT,
-            creado_en TEXT
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS planos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            proyecto_id INTEGER NOT NULL,
-            nombre TEXT,
-            ruta_archivo TEXT,
-            subido_en TEXT,
-            FOREIGN KEY (proyecto_id) REFERENCES proyectos(id)
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS puntos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            proyecto_id INTEGER NOT NULL,
-            plano_id INTEGER NOT NULL,
-            etiqueta TEXT,
-            ubicacion_especifica TEXT,
-            x_pct REAL,
-            y_pct REAL,
-            tipo_categoria TEXT,
-            creado_en TEXT,
-            FOREIGN KEY (proyecto_id) REFERENCES proyectos(id),
-            FOREIGN KEY (plano_id) REFERENCES planos(id)
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS inspecciones (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            punto_id INTEGER NOT NULL,
-            fecha TEXT,
-            tipo_lesion TEXT,
-            ancho_mm REAL,
-            longitud_m REAL,
-            area_m2 REAL,
-            extension TEXT,
-            estado TEXT,
-            incidencia_estructural TEXT,
-            condiciones_ambientales TEXT,
-            intervenciones_previas TEXT,
-            descripcion TEXT,
-            observaciones TEXT,
-            foto_path TEXT,
-            tipo_losa TEXT,
-            ubicacion_losa TEXT,
-            manifestaciones_losa TEXT,
-            obs_losa TEXT,
-            grado_severidad_losa INTEGER,
-            superficie_afectada_pct TEXT,
-            creado_en TEXT,
-            FOREIGN KEY (punto_id) REFERENCES puntos(id)
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS informes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            proyecto_id INTEGER NOT NULL,
-            punto_id INTEGER,
-            titulo TEXT,
-            diagnostico TEXT,
-            gravedad_riesgo TEXT,
-            estado_actividad TEXT,
-            pronostico TEXT,
-            propuesta_solucion TEXT,
-            creado_en TEXT,
-            FOREIGN KEY (proyecto_id) REFERENCES proyectos(id),
-            FOREIGN KEY (punto_id) REFERENCES puntos(id)
-        )
-    """)
-
-    cur.execute("PRAGMA table_info(puntos)")
-    cols_puntos = [col[1] for col in cur.fetchall()]
-    if "tipo_categoria" not in cols_puntos:
-        cur.execute("ALTER TABLE puntos ADD COLUMN tipo_categoria TEXT")
-
-    cur.execute("PRAGMA table_info(inspecciones)")
-    cols_insp = [col[1] for col in cur.fetchall()]
-    
-    nuevas_columnas = {
-        "tipo_losa": "TEXT",
-        "ubicacion_losa": "TEXT",
-        "manifestaciones_losa": "TEXT",
-        "obs_losa": "TEXT",
-        "grado_severidad_losa": "INTEGER",
-        "superficie_afectada_pct": "TEXT"
-    }
-
-    for col, tipo in nuevas_columnas.items():
-        if col not in cols_insp:
-            cur.execute(f"ALTER TABLE inspecciones ADD COLUMN {col} {tipo}")
-
-    conn.commit()
-    conn.close()
-
+def subir_archivo_supabase(bucket: str, path: str, file_bytes: bytes, content_type: str) -> str:
+    supabase.storage.from_(bucket).upload(
+        path=path,
+        file=file_bytes,
+        file_options={"content-type": content_type, "upsert": "true"}
+    )
+    res = supabase.storage.from_(bucket).get_public_url(path)
+    return res
 
 def listar_proyectos():
-    conn = get_conn()
-    df = pd.read_sql_query("SELECT * FROM proyectos ORDER BY nombre", conn)
-    conn.close()
-    return df
-
+    res = supabase.table("proyectos").select("*").order("nombre").execute()
+    return pd.DataFrame(res.data)
 
 def crear_proyecto(nombre, descripcion):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO proyectos (nombre, descripcion, creado_en) VALUES (?, ?, ?)",
-        (nombre.strip(), descripcion.strip(), dt.datetime.now().isoformat()),
-    )
-    conn.commit()
-    conn.close()
-
+    data = {"nombre": nombre.strip(), "descripcion": descripcion.strip()}
+    supabase.table("proyectos").insert(data).execute()
 
 def listar_planos(proyecto_id):
-    conn = get_conn()
-    df = pd.read_sql_query(
-        "SELECT * FROM planos WHERE proyecto_id = ? ORDER BY subido_en DESC",
-        conn, params=(proyecto_id,),
-    )
-    conn.close()
-    return df
+    res = supabase.table("planos").select("*").eq("proyecto_id", proyecto_id).order("subido_en", desc=True).execute()
+    return pd.DataFrame(res.data)
 
-
-def guardar_plano(proyecto_id, nombre, ruta_archivo):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO planos (proyecto_id, nombre, ruta_archivo, subido_en) VALUES (?, ?, ?, ?)",
-        (proyecto_id, nombre, ruta_archivo, dt.datetime.now().isoformat()),
-    )
-    conn.commit()
-    plano_id = cur.lastrowid
-    conn.close()
-    return plano_id
-
+def guardar_plano(proyecto_id, nombre, url_archivo):
+    data = {
+        "proyecto_id": proyecto_id,
+        "nombre": nombre,
+        "ruta_archivo": url_archivo,
+    }
+    supabase.table("planos").insert(data).execute()
 
 def listar_puntos(proyecto_id, plano_id=None):
-    conn = get_conn()
+    query = supabase.table("puntos").select("*").eq("proyecto_id", proyecto_id)
     if plano_id:
-        df = pd.read_sql_query(
-            "SELECT * FROM puntos WHERE proyecto_id = ? AND plano_id = ? ORDER BY creado_en",
-            conn, params=(proyecto_id, plano_id),
-        )
-    else:
-        df = pd.read_sql_query(
-            "SELECT * FROM puntos WHERE proyecto_id = ? ORDER BY creado_en",
-            conn, params=(proyecto_id,),
-        )
-    conn.close()
-    return df
-
+        query = query.eq("plano_id", plano_id)
+    res = query.order("creado_en").execute()
+    return pd.DataFrame(res.data)
 
 def crear_punto(proyecto_id, plano_id, etiqueta, ubicacion, x_pct, y_pct, tipo_categoria):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO puntos (proyecto_id, plano_id, etiqueta, ubicacion_especifica, x_pct, y_pct, tipo_categoria, creado_en)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (proyecto_id, plano_id, etiqueta, ubicacion, x_pct, y_pct, tipo_categoria, dt.datetime.now().isoformat()))
-    conn.commit()
-    punto_id = cur.lastrowid
-    conn.close()
-    return punto_id
-
+    data = {
+        "proyecto_id": proyecto_id,
+        "plano_id": plano_id,
+        "etiqueta": etiqueta,
+        "ubicacion_especifica": ubicacion,
+        "x_pct": x_pct,
+        "y_pct": y_pct,
+        "tipo_categoria": tipo_categoria,
+    }
+    supabase.table("puntos").insert(data).execute()
 
 def crear_inspeccion(datos):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO inspecciones (
-            punto_id, fecha, tipo_lesion, ancho_mm, longitud_m, area_m2, extension,
-            estado, incidencia_estructural, condiciones_ambientales, intervenciones_previas,
-            descripcion, observaciones, foto_path, tipo_losa, ubicacion_losa,
-            manifestaciones_losa, obs_losa, grado_severidad_losa, superficie_afectada_pct, creado_en
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        datos["punto_id"], datos["fecha"], datos["tipo_lesion"], datos["ancho_mm"],
-        datos["longitud_m"], datos["area_m2"], datos["extension"], datos["estado"],
-        datos["incidencia_estructural"], datos["condiciones_ambientales"],
-        datos["intervenciones_previas"], datos["descripcion"], datos["observaciones"],
-        datos["foto_path"], datos.get("tipo_losa", ""), datos.get("ubicacion_losa", ""),
-        datos.get("manifestaciones_losa", ""), datos.get("obs_losa", ""),
-        datos.get("grado_severidad_losa", 0), datos.get("superficie_afectada_pct", ""),
-        dt.datetime.now().isoformat(),
-    ))
-    conn.commit()
-    conn.close()
-
+    supabase.table("inspecciones").insert(datos).execute()
 
 def listar_inspecciones(proyecto_id):
-    conn = get_conn()
-    df = pd.read_sql_query("""
-        SELECT i.*, p.etiqueta AS punto_etiqueta, p.ubicacion_especifica, p.tipo_categoria AS punto_categoria
-        FROM inspecciones i
-        JOIN puntos p ON p.id = i.punto_id
-        WHERE p.proyecto_id = ?
-        ORDER BY i.fecha
-    """, conn, params=(proyecto_id,))
-    conn.close()
-    return df
+    res_puntos = supabase.table("puntos").select("id, etiqueta, ubicacion_especifica, tipo_categoria").eq("proyecto_id", proyecto_id).execute()
+    df_puntos = pd.DataFrame(res_puntos.data)
+    if df_puntos.empty:
+        return pd.DataFrame()
 
+    pids = df_puntos["id"].tolist()
+    res_insp = supabase.table("inspecciones").select("*").in_("punto_id", pids).order("fecha").execute()
+    df_insp = pd.DataFrame(res_insp.data)
+    if df_insp.empty:
+        return pd.DataFrame()
+
+    df_merged = df_insp.merge(df_puntos, left_on="punto_id", right_on="id", suffixes=("", "_punto"))
+    df_merged.rename(columns={"etiqueta": "punto_etiqueta", "tipo_categoria": "punto_categoria"}, inplace=True)
+    return df_merged
 
 def guardar_informe(datos):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO informes (
-            proyecto_id, punto_id, titulo, diagnostico, gravedad_riesgo,
-            estado_actividad, pronostico, propuesta_solucion, creado_en
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        datos["proyecto_id"], datos["punto_id"], datos["titulo"], datos["diagnostico"],
-        datos["gravedad_riesgo"], datos["estado_actividad"], datos["pronostico"],
-        datos["propuesta_solucion"], dt.datetime.now().isoformat(),
-    ))
-    conn.commit()
-    conn.close()
-
+    supabase.table("informes").insert(datos).execute()
 
 def listar_informes(proyecto_id):
-    conn = get_conn()
-    df = pd.read_sql_query(
-        "SELECT * FROM informes WHERE proyecto_id = ? ORDER BY creado_en DESC",
-        conn, params=(proyecto_id,),
-    )
-    conn.close()
-    return df
-
+    res = supabase.table("informes").select("*").eq("proyecto_id", proyecto_id).order("creado_en", desc=True).execute()
+    return pd.DataFrame(res.data)
 
 # ==================================================================================
 # LÓGICA DE SEMÁFORO Y CÓMPUTO EN EXCEL
@@ -331,8 +151,8 @@ def listar_informes(proyecto_id):
 
 def calcular_nivel_riesgo(row):
     incidencia = str(row.get("incidencia_estructural", ""))
-    grado_losa = row.get("grado_severidad_losa", 0)
-    ancho = row.get("ancho_mm", 0.0)
+    grado_losa = row.get("grado_severidad_losa", 0) or 0
+    ancho = row.get("ancho_mm", 0.0) or 0.0
 
     if incidencia == "Alta / Compromiso estructural" or grado_losa >= 3 or ancho > 0.30:
         return "🔴 ROJO (Urgente)"
@@ -341,14 +161,12 @@ def calcular_nivel_riesgo(row):
     else:
         return "🟢 VERDE (Bajo / Estable)"
 
-
 def generar_excel_cotizacion(df_inspecciones, proyecto_nombre):
     buffer = io.BytesIO()
     
-    # Calcular ítems estimados de obra a partir del relevamiento
     total_longitud_fisuras = df_inspecciones["longitud_m"].sum() if "longitud_m" in df_inspecciones else 0.0
     total_area_afectada = df_inspecciones["area_m2"].sum() if "area_m2" in df_inspecciones else 0.0
-    puntos_losa_criticos = df_inspecciones[df_inspecciones["grado_severidad_losa"] >= 2]
+    puntos_losa_criticos = df_inspecciones[df_inspecciones["grado_severidad_losa"] >= 2] if "grado_severidad_losa" in df_inspecciones else []
     
     items_cotizacion = [
         {
@@ -398,7 +216,6 @@ def generar_excel_cotizacion(df_inspecciones, proyecto_nombre):
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
         df_cotiz.to_excel(writer, sheet_name="Orden de Trabajo - Cotizador", index=False)
         
-        # Guardar también el detalle de inspecciones con semáforo
         df_detalle = df_inspecciones.copy()
         df_detalle["Semaforo_Riesgo"] = df_detalle.apply(calcular_nivel_riesgo, axis=1)
         df_detalle.to_excel(writer, sheet_name="Relevamiento de Campo", index=False)
@@ -406,72 +223,43 @@ def generar_excel_cotizacion(df_inspecciones, proyecto_nombre):
         workbook = writer.book
         worksheet = writer.sheets["Orden de Trabajo - Cotizador"]
 
-        # Formatos Excel
         fmt_header = workbook.add_format({"bold": True, "bg_color": "#2c3e50", "font_color": "white", "border": 1})
         fmt_num = workbook.add_format({"num_format": "$#,##0.00", "border": 1})
-        fmt_border = workbook.add_format({"border": 1})
 
         for col_num, value in enumerate(df_cotiz.columns.values):
             worksheet.write(0, col_num, value, fmt_header)
             worksheet.set_column(col_num, col_num, 25)
 
-        # Agregar fórmulas de subtotal en Excel
         for row_idx in range(1, len(df_cotiz) + 1):
             worksheet.write_formula(row_idx, 5, f"=D{row_idx+1}*E{row_idx+1}", fmt_num)
 
     return buffer.getvalue()
 
-
 # ==================================================================================
-# UTILIDADES DE ARCHIVOS
+# UTILIDADES DE IMÁGENES Y PLANOS
 # ==================================================================================
 
-def slugify(texto):
-    return "".join(c if c.isalnum() else "_" for c in texto).strip("_")
-
-
-def guardar_archivo_plano(uploaded_file, proyecto_nombre):
-    carpeta = os.path.join(PLANOS_DIR, slugify(proyecto_nombre))
-    os.makedirs(carpeta, exist_ok=True)
-    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    nombre_final = f"{timestamp}_{uploaded_file.name}"
-    ruta = os.path.join(carpeta, nombre_final)
-    with open(ruta, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    return ruta
-
-
-def guardar_archivo_foto(uploaded_file, proyecto_nombre, etiqueta_punto):
-    carpeta = os.path.join(FOTOS_DIR, slugify(proyecto_nombre), slugify(etiqueta_punto))
-    os.makedirs(carpeta, exist_ok=True)
-    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    nombre_final = f"{timestamp}_{uploaded_file.name}"
-    ruta = os.path.join(carpeta, nombre_final)
-    with open(ruta, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    return ruta
-
+import requests
 
 @st.cache_data(show_spinner=False)
-def cargar_imagen_desde_ruta(ruta_archivo):
-    ext = os.path.splitext(ruta_archivo)[1].lower()
-    if ext == ".pdf":
-        with open(ruta_archivo, "rb") as f:
-            pdf_bytes = f.read()
+def cargar_imagen_desde_url(url: str):
+    res = requests.get(url)
+    res.raise_for_status()
+    file_bytes = res.content
+    ext = url.split("?")[0].split(".")[-1].lower()
+    if ext == "pdf":
         if not PDF2IMAGE_OK:
-            raise RuntimeError("pdf2image / poppler no disponible.")
-        paginas = convert_from_bytes(pdf_bytes, dpi=150, first_page=1, last_page=1)
+            raise RuntimeError("pdf2image no disponible para visualizar el plano PDF.")
+        paginas = convert_from_bytes(file_bytes, dpi=150, first_page=1, last_page=1)
         return paginas[0].convert("RGB")
     else:
-        return Image.open(ruta_archivo).convert("RGB")
-
+        return Image.open(io.BytesIO(file_bytes)).convert("RGB")
 
 def imagen_a_data_uri(imagen: Image.Image) -> str:
     buffer = io.BytesIO()
     imagen.save(buffer, format="PNG")
     b64 = base64.b64encode(buffer.getvalue()).decode()
     return f"data:image/png;base64,{b64}"
-
 
 # ==================================================================================
 # GRÁFICOS
@@ -520,7 +308,6 @@ def construir_figura_plano(imagen: Image.Image, puntos_df: pd.DataFrame, punto_r
     fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=650, showlegend=False, dragmode="pan")
     return fig
 
-
 def construir_grafico_evolucion(df_punto: pd.DataFrame, etiqueta_punto: str):
     df_punto = df_punto.sort_values("fecha")
     fig = go.Figure()
@@ -556,7 +343,6 @@ def construir_grafico_evolucion(df_punto: pd.DataFrame, etiqueta_punto: str):
         )
     return fig
 
-
 # ==================================================================================
 # AUTENTICACIÓN Y PANEL LATERAL
 # ==================================================================================
@@ -578,12 +364,10 @@ def pantalla_login():
         else:
             st.error("Usuario o contraseña incorrectos.")
 
-
 def cerrar_sesion():
     for key in ["autenticado", "usuario", "proyecto_id", "proyecto_nombre", "plano_id"]:
         st.session_state.pop(key, None)
     st.rerun()
-
 
 def panel_proyectos():
     st.sidebar.header("📁 Proyecto")
@@ -605,8 +389,8 @@ def panel_proyectos():
                     crear_proyecto(nombre_nuevo, desc_nueva)
                     st.success(f"Proyecto '{nombre_nuevo}' creado.")
                     st.rerun()
-                except sqlite3.IntegrityError:
-                    st.error("Ya existe un proyecto con ese nombre.")
+                except Exception as e:
+                    st.error(f"Error al crear proyecto: {e}")
             else:
                 st.warning("Ingresá un nombre para el proyecto.")
 
@@ -615,9 +399,8 @@ def panel_proyectos():
     if st.sidebar.button("Cerrar sesión"):
         cerrar_sesion()
 
-
 # ==================================================================================
-# PESTAÑAS DE LA APLICACIÓN
+# PESTAÑAS
 # ==================================================================================
 
 def tab_plano_y_puntos(proyecto_id, proyecto_nombre):
@@ -628,9 +411,10 @@ def tab_plano_y_puntos(proyecto_id, proyecto_nombre):
         archivo_plano = st.file_uploader("Subir plano (PDF, PNG o JPG)", type=["pdf", "png", "jpg", "jpeg"], key="uploader_plano")
         if archivo_plano is not None:
             if st.button("Guardar este plano en el proyecto"):
-                ruta = guardar_archivo_plano(archivo_plano, proyecto_nombre)
-                guardar_plano(proyecto_id, archivo_plano.name, ruta)
-                st.success("Plano guardado correctamente.")
+                path_str = f"{slugify(proyecto_nombre)}/{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}_{archivo_plano.name}"
+                url_publica = subir_archivo_supabase("planos", path_str, archivo_plano.getbuffer().tobytes(), archivo_plano.type)
+                guardar_plano(proyecto_id, archivo_plano.name, url_publica)
+                st.success("Plano guardado correctamente en la nube.")
                 st.rerun()
 
     planos_df = listar_planos(proyecto_id)
@@ -645,9 +429,9 @@ def tab_plano_y_puntos(proyecto_id, proyecto_nombre):
         st.session_state["plano_id"] = int(plano_actual["id"])
 
     try:
-        imagen = cargar_imagen_desde_ruta(plano_actual["ruta_archivo"])
+        imagen = cargar_imagen_desde_url(plano_actual["ruta_archivo"])
     except Exception as e:
-        st.error(f"No se pudo renderizar el plano: {e}")
+        st.error(f"No se pudo cargar el plano desde la nube: {e}")
         return
 
     puntos_df = listar_puntos(proyecto_id, plano_id=int(plano_actual["id"]))
@@ -685,7 +469,6 @@ def tab_plano_y_puntos(proyecto_id, proyecto_nombre):
             st.rerun()
         else:
             st.warning("La etiqueta del punto es obligatoria.")
-
 
 def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
     st.subheader("📝 Ficha de inspección patológica")
@@ -736,7 +519,7 @@ def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
                 sev_label = st.selectbox("Grado de Severidad Visual", list(SEVERIDAD_LOSA.keys()))
                 grado_sev_num = SEVERIDAD_LOSA[sev_label]
             
-            st.write("**Manifestaciones observadas (Marque todas las que correspondan):**")
+            st.write("**Manifestaciones observadas:**")
             m1, m2, m3 = st.columns(3)
             with m1:
                 ch_desprendimiento = st.checkbox("Desprendimiento de recubrimiento")
@@ -759,7 +542,7 @@ def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
             if ch_flecha: manifestaciones_lista.append("Deflexión visible")
             manifestaciones_str = ", ".join(manifestaciones_lista)
 
-            obs_losa = st.text_area("Observaciones específicas de la losa (detalles adicionales no contemplados)", height=80)
+            obs_losa = st.text_area("Observaciones específicas de la losa", height=80)
 
         st.markdown("---")
         st.markdown("##### Estado y entorno")
@@ -774,14 +557,15 @@ def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
         st.markdown("##### Descripción y Registro Fotográfico")
         descripcion = st.text_area("Descripción general corta", height=70)
         observaciones = st.text_area("Observaciones libres", height=90)
-        foto = st.file_uploader("Foto de inspección (Recomendado foto con zoom para losas)", type=["png", "jpg", "jpeg"])
+        foto = st.file_uploader("Foto de inspección", type=["png", "jpg", "jpeg"])
 
         enviar = st.form_submit_button("Guardar inspección", use_container_width=True)
 
     if enviar:
-        foto_path = ""
+        foto_url = ""
         if foto is not None:
-            foto_path = guardar_archivo_foto(foto, proyecto_nombre, punto_sel["etiqueta"])
+            path_str = f"{slugify(proyecto_nombre)}/{slugify(punto_sel['etiqueta'])}/{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}_{foto.name}"
+            foto_url = subir_archivo_supabase("fotos", path_str, foto.getbuffer().tobytes(), foto.type)
 
         datos = {
             "punto_id": int(punto_sel["id"]),
@@ -797,7 +581,7 @@ def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
             "intervenciones_previas": intervenciones,
             "descripcion": descripcion,
             "observaciones": observaciones,
-            "foto_path": foto_path,
+            "foto_path": foto_url,
             "tipo_losa": tipo_losa,
             "ubicacion_losa": ubicacion_losa,
             "manifestaciones_losa": manifestaciones_str,
@@ -806,8 +590,7 @@ def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
             "superficie_afectada_pct": sup_afectada_pct,
         }
         crear_inspeccion(datos)
-        st.success(f"Inspección registrada para el punto '{punto_sel['etiqueta']}'.")
-
+        st.success(f"Inspección guardada permanentemente para '{punto_sel['etiqueta']}'.")
 
 def tab_evolucion(proyecto_id):
     st.subheader("📈 Evolución temporal por punto y afectación")
@@ -854,7 +637,7 @@ def tab_evolucion(proyecto_id):
         with st.expander(titulo_exp):
             c1, c2 = st.columns([1, 2])
             with c1:
-                if fila["foto_path"] and os.path.exists(fila["foto_path"]):
+                if fila["foto_path"]:
                     st.image(fila["foto_path"], use_container_width=True)
                 else:
                     st.caption("Sin foto asociada.")
@@ -870,7 +653,6 @@ def tab_evolucion(proyecto_id):
                 st.write(f"**Descripción:** {fila['descripcion']}")
                 st.write(f"**Observaciones:** {fila['observaciones']}")
 
-
 def tab_dashboard_y_cotizador(proyecto_id, proyecto_nombre):
     st.subheader("🚦 Semáforo de Riesgo y Planilla de Cotización Excel")
 
@@ -879,7 +661,6 @@ def tab_dashboard_y_cotizador(proyecto_id, proyecto_nombre):
         st.info("Todavía no hay inspecciones registradas para construir el tablero de control.")
         return
 
-    # 1. SEMÁFORO OPERATIVO
     inspecciones_df["Riesgo"] = inspecciones_df.apply(calcular_nivel_riesgo, axis=1)
     
     cant_rojo = len(inspecciones_df[inspecciones_df["Riesgo"].str.contains("ROJO")])
@@ -899,7 +680,6 @@ def tab_dashboard_y_cotizador(proyecto_id, proyecto_nombre):
 
     st.markdown("---")
     st.markdown("##### 💵 Descargar Pliego de Cotización / Orden de Trabajo")
-    st.caption("Generá una planilla Excel editable con cómputos automáticos para cotizar tareas con contratistas.")
 
     bytes_excel = generar_excel_cotizacion(inspecciones_df, proyecto_nombre)
     st.download_button(
@@ -909,7 +689,6 @@ def tab_dashboard_y_cotizador(proyecto_id, proyecto_nombre):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
-
 
 def tab_informe_tecnico(proyecto_id, proyecto_nombre):
     st.subheader("📄 Informe técnico y diagnóstico")
@@ -942,7 +721,7 @@ def tab_informe_tecnico(proyecto_id, proyecto_nombre):
             "propuesta_solucion": propuesta,
         }
         guardar_informe(datos)
-        st.success("Informe guardado correctamente.")
+        st.success("Informe guardado correctamente en la nube.")
 
     st.markdown("---")
     st.markdown("##### Informes guardados")
@@ -951,21 +730,18 @@ def tab_informe_tecnico(proyecto_id, proyecto_nombre):
         st.caption("Todavía no se guardaron informes para este proyecto.")
     else:
         for _, fila in informes_df.iterrows():
-            with st.expander(f"{fila['titulo']} — {fila['creado_en'][:10]}"):
+            with st.expander(f"{fila['titulo']} — {str(fila['creado_en'])[:10]}"):
                 st.write(f"**Diagnóstico:** {fila['diagnostico']}")
                 st.write(f"**Gravedad y riesgo:** {fila['gravedad_riesgo']}")
                 st.write(f"**Estado de actividad:** {fila['estado_actividad']}")
                 st.write(f"**Pronóstico:** {fila['pronostico']}")
                 st.write(f"**Propuesta de solución:** {fila['propuesta_solucion']}")
 
-
 # ==================================================================================
 # MAIN
 # ==================================================================================
 
 def main():
-    init_db()
-
     if not st.session_state.get("autenticado", False):
         pantalla_login()
         return
@@ -1001,7 +777,6 @@ def main():
         tab_dashboard_y_cotizador(proyecto_id, proyecto_nombre)
     with tabs[4]:
         tab_informe_tecnico(proyecto_id, proyecto_nombre)
-
 
 if __name__ == "__main__":
     main()
