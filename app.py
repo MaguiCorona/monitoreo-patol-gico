@@ -4,7 +4,7 @@
  APP MULTIPROYECTO DE INSPECCIÓN Y MONITOREO PATOLÓGICO ESTRUCTURAL EDILICIO
 ==================================================================================
 Stack: Streamlit + Plotly + Pandas + Pillow + PyPDF2 / pdf2image + SQLite
-Incluye: Monitoreo de Fisuras, Humedades y Losas/Hormigón en Altura
+Incluye: Semáforo de Riesgos + Planilla Excel Cotizable de Orden de Trabajo
 ==================================================================================
 """
 
@@ -166,7 +166,6 @@ def init_db():
         )
     """)
 
-    # Migración automática de columnas en puntos e inspecciones
     cur.execute("PRAGMA table_info(puntos)")
     cols_puntos = [col[1] for col in cur.fetchall()]
     if "tipo_categoria" not in cols_puntos:
@@ -191,8 +190,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-
-# ---------- Helpers de acceso a datos ----------
 
 def listar_proyectos():
     conn = get_conn()
@@ -326,6 +323,103 @@ def listar_informes(proyecto_id):
     )
     conn.close()
     return df
+
+
+# ==================================================================================
+# LÓGICA DE SEMÁFORO Y CÓMPUTO EN EXCEL
+# ==================================================================================
+
+def calcular_nivel_riesgo(row):
+    incidencia = str(row.get("incidencia_estructural", ""))
+    grado_losa = row.get("grado_severidad_losa", 0)
+    ancho = row.get("ancho_mm", 0.0)
+
+    if incidencia == "Alta / Compromiso estructural" or grado_losa >= 3 or ancho > 0.30:
+        return "🔴 ROJO (Urgente)"
+    elif incidencia == "Moderada" or grado_losa == 2 or (0.15 <= ancho <= 0.30):
+        return "🟡 AMARILLO (Atención)"
+    else:
+        return "🟢 VERDE (Bajo / Estable)"
+
+
+def generar_excel_cotizacion(df_inspecciones, proyecto_nombre):
+    buffer = io.BytesIO()
+    
+    # Calcular ítems estimados de obra a partir del relevamiento
+    total_longitud_fisuras = df_inspecciones["longitud_m"].sum() if "longitud_m" in df_inspecciones else 0.0
+    total_area_afectada = df_inspecciones["area_m2"].sum() if "area_m2" in df_inspecciones else 0.0
+    puntos_losa_criticos = df_inspecciones[df_inspecciones["grado_severidad_losa"] >= 2]
+    
+    items_cotizacion = [
+        {
+            "Ítem": "1.01",
+            "Descripción de Tarea": "Picado, saneado y retiro de recubrimiento suelto/fisurado en losas a gran altura",
+            "Unidad": "m²",
+            "Cantidad Estimada": round(max(total_area_afectada, len(puntos_losa_criticos) * 2.5), 2),
+            "Precio Unitario ($)": "",
+            "Notas de Campo": "Incluye uso de andamios o silleta según relevamiento."
+        },
+        {
+            "Ítem": "1.02",
+            "Descripción de Tarea": "Limpieza manual/mecánica de armadura expuesta con cepillo de acero e pasivador anticorrosivo",
+            "Unidad": "m²",
+            "Cantidad Estimada": round(len(puntos_losa_criticos) * 1.5, 2),
+            "Precio Unitario ($)": "",
+            "Notas de Campo": "Aplicar mortero pasivador sintético sobre hierro expuesto."
+        },
+        {
+            "Ítem": "1.03",
+            "Descripción de Tarea": "Reconstrucción de recubrimiento con mortero tixotrópico de reparación estructural",
+            "Unidad": "m²",
+            "Cantidad Estimada": round(max(total_area_afectada, len(puntos_losa_criticos) * 2.5), 2),
+            "Precio Unitario ($)": "",
+            "Notas de Campo": "Restablecer geometría original de la losa."
+        },
+        {
+            "Ítem": "2.01",
+            "Descripción de Tarea": "Sellado de fisuras y grietas con masilla/resina elástica de poliuretano",
+            "Unidad": "m",
+            "Cantidad Estimada": round(max(total_longitud_fisuras, 10.0), 2),
+            "Precio Unitario ($)": "",
+            "Notas de Campo": "Apertura en 'V' previo al sellado sintético."
+        },
+        {
+            "Ítem": "3.01",
+            "Descripción de Tarea": "Provisión y armado de estructura de andamios / equipos de seguridad para trabajos en altura",
+            "Unidad": "Gl",
+            "Cantidad Estimada": 1.0,
+            "Precio Unitario ($)": "",
+            "Notas de Campo": "Global por sector según zonas rojas identificadas."
+        }
+    ]
+
+    df_cotiz = pd.DataFrame(items_cotizacion)
+
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        df_cotiz.to_excel(writer, sheet_name="Orden de Trabajo - Cotizador", index=False)
+        
+        # Guardar también el detalle de inspecciones con semáforo
+        df_detalle = df_inspecciones.copy()
+        df_detalle["Semaforo_Riesgo"] = df_detalle.apply(calcular_nivel_riesgo, axis=1)
+        df_detalle.to_excel(writer, sheet_name="Relevamiento de Campo", index=False)
+
+        workbook = writer.book
+        worksheet = writer.sheets["Orden de Trabajo - Cotizador"]
+
+        # Formatos Excel
+        fmt_header = workbook.add_format({"bold": True, "bg_color": "#2c3e50", "font_color": "white", "border": 1})
+        fmt_num = workbook.add_format({"num_format": "$#,##0.00", "border": 1})
+        fmt_border = workbook.add_format({"border": 1})
+
+        for col_num, value in enumerate(df_cotiz.columns.values):
+            worksheet.write(0, col_num, value, fmt_header)
+            worksheet.set_column(col_num, col_num, 25)
+
+        # Agregar fórmulas de subtotal en Excel
+        for row_idx in range(1, len(df_cotiz) + 1):
+            worksheet.write_formula(row_idx, 5, f"=D{row_idx+1}*E{row_idx+1}", fmt_num)
+
+    return buffer.getvalue()
 
 
 # ==================================================================================
@@ -464,7 +558,7 @@ def construir_grafico_evolucion(df_punto: pd.DataFrame, etiqueta_punto: str):
 
 
 # ==================================================================================
-# AUTENTICACIÓN
+# AUTENTICACIÓN Y PANEL LATERAL
 # ==================================================================================
 
 def pantalla_login():
@@ -490,10 +584,6 @@ def cerrar_sesion():
         st.session_state.pop(key, None)
     st.rerun()
 
-
-# ==================================================================================
-# SELECTOR DE PROYECTOS (SIDEBAR)
-# ==================================================================================
 
 def panel_proyectos():
     st.sidebar.header("📁 Proyecto")
@@ -527,7 +617,7 @@ def panel_proyectos():
 
 
 # ==================================================================================
-# TAB 1: PLANO Y PUNTOS
+# PESTAÑAS DE LA APLICACIÓN
 # ==================================================================================
 
 def tab_plano_y_puntos(proyecto_id, proyecto_nombre):
@@ -597,10 +687,6 @@ def tab_plano_y_puntos(proyecto_id, proyecto_nombre):
             st.warning("La etiqueta del punto es obligatoria.")
 
 
-# ==================================================================================
-# TAB 2: NUEVA INSPECCIÓN (FICHA COMPLETA Y LOSAS)
-# ==================================================================================
-
 def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
     st.subheader("📝 Ficha de inspección patológica")
 
@@ -629,7 +715,6 @@ def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
             area_m2 = st.number_input("Área afectada (m²) - Opcional", min_value=0.0, step=0.01, format="%.2f")
             extension = st.text_input("Extensión (ej. 'Toda la luz de la losa')")
 
-        # MÓDULO ESPECÍFICO PARA LOSAS / HORMIGÓN EN ALTURA
         tipo_losa = ""
         ubicacion_losa = ""
         manifestaciones_str = ""
@@ -724,10 +809,6 @@ def tab_nueva_inspeccion(proyecto_id, proyecto_nombre):
         st.success(f"Inspección registrada para el punto '{punto_sel['etiqueta']}'.")
 
 
-# ==================================================================================
-# TAB 3: EVOLUCIÓN Y GRÁFICOS
-# ==================================================================================
-
 def tab_evolucion(proyecto_id):
     st.subheader("📈 Evolución temporal por punto y afectación")
 
@@ -790,43 +871,45 @@ def tab_evolucion(proyecto_id):
                 st.write(f"**Observaciones:** {fila['observaciones']}")
 
 
-# ==================================================================================
-# TAB 4: TABLA Y EXPORTACIÓN
-# ==================================================================================
-
-def tab_tabla_exportacion(proyecto_id, proyecto_nombre):
-    st.subheader("📊 Registro acumulado de inspecciones")
+def tab_dashboard_y_cotizador(proyecto_id, proyecto_nombre):
+    st.subheader("🚦 Semáforo de Riesgo y Planilla de Cotización Excel")
 
     inspecciones_df = listar_inspecciones(proyecto_id)
     if inspecciones_df.empty:
-        st.info("Todavía no hay inspecciones registradas en este proyecto.")
+        st.info("Todavía no hay inspecciones registradas para construir el tablero de control.")
         return
 
-    cols_existentes = inspecciones_df.columns.tolist()
-    columnas_mostrar = [
-        "fecha", "punto_etiqueta", "ubicacion_especifica", "tipo_lesion",
-        "ancho_mm", "grado_severidad_losa", "manifestaciones_losa", "obs_losa", "superficie_afectada_pct",
-        "estado", "incidencia_estructural", "descripcion", "observaciones",
-    ]
-    columnas_validas = [c for c in columnas_mostrar if c in cols_existentes]
-    df_mostrar = inspecciones_df[columnas_validas]
+    # 1. SEMÁFORO OPERATIVO
+    inspecciones_df["Riesgo"] = inspecciones_df.apply(calcular_nivel_riesgo, axis=1)
+    
+    cant_rojo = len(inspecciones_df[inspecciones_df["Riesgo"].str.contains("ROJO")])
+    cant_amarillo = len(inspecciones_df[inspecciones_df["Riesgo"].str.contains("AMARILLO")])
+    cant_verde = len(inspecciones_df[inspecciones_df["Riesgo"].str.contains("VERDE")])
 
-    st.dataframe(df_mostrar, use_container_width=True, height=450)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("🔴 Críticos / Urgentes", cant_rojo)
+    m2.metric("🟡 Monitoreo / Atención", cant_amarillo)
+    m3.metric("🟢 Estable / Bajo Riesgo", cant_verde)
 
-    col_csv, col_xlsx = st.columns(2)
-    with col_csv:
-        csv_bytes = df_mostrar.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("⬇️ Descargar CSV", data=csv_bytes, file_name=f"planilla_{slugify(proyecto_nombre)}.csv", mime="text/csv", use_container_width=True)
-    with col_xlsx:
-        buffer_xlsx = io.BytesIO()
-        with pd.ExcelWriter(buffer_xlsx, engine="xlsxwriter") as writer:
-            inspecciones_df.to_excel(writer, index=False, sheet_name="Inspecciones")
-        st.download_button("⬇️ Descargar Excel Completo", data=buffer_xlsx.getvalue(), file_name=f"planilla_{slugify(proyecto_nombre)}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+    st.markdown("---")
+    st.markdown("##### 📋 Clasificación de Puntos según Prioridad")
+    
+    cols_mostrar = ["fecha", "punto_etiqueta", "tipo_lesion", "Riesgo", "incidencia_estructural", "grado_severidad_losa", "descripcion"]
+    st.dataframe(inspecciones_df[cols_mostrar], use_container_width=True)
 
+    st.markdown("---")
+    st.markdown("##### 💵 Descargar Pliego de Cotización / Orden de Trabajo")
+    st.caption("Generá una planilla Excel editable con cómputos automáticos para cotizar tareas con contratistas.")
 
-# ==================================================================================
-# TAB 5: INFORME TÉCNICO Y DIAGNÓSTICO
-# ==================================================================================
+    bytes_excel = generar_excel_cotizacion(inspecciones_df, proyecto_nombre)
+    st.download_button(
+        label="⬇️ Descargar Orden de Trabajo y Cotizador (Excel Editable)",
+        data=bytes_excel,
+        file_name=f"cotizador_obra_{slugify(proyecto_nombre)}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
 
 def tab_informe_tecnico(proyecto_id, proyecto_nombre):
     st.subheader("📄 Informe técnico y diagnóstico")
@@ -904,7 +987,7 @@ def main():
         "🗺️ Plano y Puntos",
         "📝 Nueva Inspección",
         "📈 Evolución y Gráficos",
-        "📊 Tabla y Exportación",
+        "🚦 Dashboard y Cotizador Excel",
         "📄 Informe Técnico",
     ])
 
@@ -915,7 +998,7 @@ def main():
     with tabs[2]:
         tab_evolucion(proyecto_id)
     with tabs[3]:
-        tab_tabla_exportacion(proyecto_id, proyecto_nombre)
+        tab_dashboard_y_cotizador(proyecto_id, proyecto_nombre)
     with tabs[4]:
         tab_informe_tecnico(proyecto_id, proyecto_nombre)
 
