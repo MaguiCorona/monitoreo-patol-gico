@@ -393,9 +393,12 @@ def tab_planos_y_puntos(proyecto_id):
         coord_y = st.number_input("Posición Y (%)", 0.0, 100.0, float(st.session_state.clic_y), 0.1)
 
         if st.button("Registrar Punto") and etiqueta:
-            crear_punto(proyecto_id, plano_actual["id"], coord_x, coord_y, etiqueta, tipo_patologia)
-            st.success("Punto registrado correctamente.")
-            st.rerun()
+            try:
+                crear_punto(proyecto_id, plano_actual["id"], coord_x, coord_y, etiqueta, tipo_patologia)
+                st.success("¡Punto registrado correctamente!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error de Supabase al guardar el punto: {e}")
 
         # ---------------------------------------------------------------------
         # SECCIÓN DE EDICIÓN Y ELIMINACIÓN DE PUNTOS
@@ -420,15 +423,21 @@ def tab_planos_y_puntos(proyecto_id):
                 col_b1, col_b2 = st.columns(2)
                 with col_b1:
                     if st.button("💾 Guardar Cambios"):
-                        actualizar_punto(punto_a_editar["id"], edit_x, edit_y, edit_etiqueta, edit_tipo)
-                        st.success("¡Punto actualizado!")
-                        st.rerun()
+                        try:
+                            actualizar_punto(punto_a_editar["id"], edit_x, edit_y, edit_etiqueta, edit_tipo)
+                            st.success("¡Punto actualizado!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error de Supabase al actualizar: {e}")
 
                 with col_b2:
                     if st.button("🗑️ Eliminar Punto", type="primary"):
-                        eliminar_punto(punto_a_editar["id"])
-                        st.warning("Punto eliminado.")
-                        st.rerun()
+                        try:
+                            eliminar_punto(punto_a_editar["id"])
+                            st.warning("Punto eliminado.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Error de Supabase al eliminar: {e}")
 
             st.write("📍 **Tabla de Puntos:**")
             df_pt = pd.DataFrame(puntos)[["etiqueta", "tipo_patologia", "x_pct", "y_pct"]]
@@ -475,9 +484,12 @@ def tab_relevamiento(proyecto_id):
                 path = f"{punto_actual['id']}/{fecha}_{foto.name.replace(' ', '_')}"
                 url_foto = subir_archivo_supabase("fotos", path, bytes_f, foto.type)
 
-            crear_inspeccion(punto_actual["id"], fecha, valor, unidad, severidad, obs, url_foto)
-            st.success("Inspección guardada con éxito.")
-            st.rerun()
+            try:
+                crear_inspeccion(punto_actual["id"], fecha, valor, unidad, severidad, obs, url_foto)
+                st.success("Inspección guardada con éxito.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error al guardar inspección: {e}")
 
     with col2:
         st.subheader("Historial de este Punto")
