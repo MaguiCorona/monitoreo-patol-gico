@@ -118,6 +118,21 @@ def crear_inspeccion(punto_id, fecha, valor, unidad, severidad, observacion, url
     }
     return supabase.table("inspecciones").insert(data).execute()
 
+def actualizar_inspeccion(inspeccion_id, fecha, valor, unidad, severidad, observacion, url_foto=None):
+    data = {
+        "fecha": str(fecha),
+        "valor_medicion": valor,
+        "unidad_medicion": unidad,
+        "severidad_subjetiva": severidad,
+        "descripcion": observacion
+    }
+    if url_foto:
+        data["foto_path"] = url_foto
+    return supabase.table("inspecciones").update(data).eq("id", inspeccion_id).execute()
+
+def eliminar_inspeccion(inspeccion_id):
+    return supabase.table("inspecciones").delete().eq("id", inspeccion_id).execute()
+
 # -----------------------------------------------------------------------------
 # DIBUJAR PUNTOS EN LA IMAGEN DEL PLANO
 # -----------------------------------------------------------------------------
@@ -444,7 +459,7 @@ def tab_planos_y_puntos(proyecto_id):
             st.dataframe(df_pt, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 2: RELEVAMIENTO E INSPECCIONES
+# TAB 2: RELEVAMIENTO E INSPECCIONES (CON EDICIÓN Y ELIMINACIÓN)
 # -----------------------------------------------------------------------------
 def tab_relevamiento(proyecto_id):
     puntos = obtener_puntos(proyecto_id=proyecto_id)
@@ -459,11 +474,11 @@ def tab_relevamiento(proyecto_id):
     col1, col2 = st.columns([1, 1])
 
     with col1:
-        st.subheader(f"Cargar Inspección: {punto_actual['etiqueta']}")
+        st.subheader(f"Cargar Nueva Inspección: {punto_actual['etiqueta']}")
         
         tipo = punto_actual["tipo_patologia"]
         
-        # Asignación de unidades según el tipo de patología:
+        # Asignación de unidades según el tipo de patología
         if tipo == "Fisura/Grieta":
             unidad = "mm"
         elif tipo in ["Humedad/Filtración", "Afectación en Losa", "Desprendimiento en Muros"]:
@@ -498,13 +513,55 @@ def tab_relevamiento(proyecto_id):
         if not inspecciones:
             st.caption("Aún no hay mediciones registradas.")
         else:
-            for insp in inspecciones:
+            severidades_opts = ["Baja", "Media", "Alta", "Crítica"]
+            
+            for idx, insp in enumerate(inspecciones):
                 with st.container(border=True):
                     st.write(f"📅 **Fecha:** {insp['fecha']} | **Valor:** {insp['valor_medicion']} {insp['unidad_medicion']}")
                     st.write(f"⚠️ **Severidad:** {insp['severidad_subjetiva']}")
                     st.write(f"📝 {insp['descripcion']}")
                     if insp.get("foto_path"):
                         st.image(insp["foto_path"], width=280)
+                    
+                    # Desplegable para editar esta inspección en particular
+                    with st.expander(f"✏️ Editar / Eliminar esta inspección (#{idx+1})"):
+                        try:
+                            fecha_val = datetime.datetime.strptime(insp['fecha'], "%Y-%m-%d").date()
+                        except Exception:
+                            fecha_val = datetime.date.today()
+
+                        edit_fecha = st.date_input("Fecha", value=fecha_val, key=f"edit_f_{insp['id']}")
+                        edit_valor = st.number_input(f"Medición ({insp['unidad_medicion']})", min_value=0.0, value=float(insp['valor_medicion']), step=0.1, key=f"edit_v_{insp['id']}")
+                        
+                        idx_sev = severidades_opts.index(insp['severidad_subjetiva']) if insp['severidad_subjetiva'] in severidades_opts else 0
+                        edit_sev = st.selectbox("Severidad", severidades_opts, index=idx_sev, key=f"edit_s_{insp['id']}")
+                        edit_obs = st.text_area("Observaciones", value=insp.get('descripcion', ''), key=f"edit_o_{insp['id']}")
+                        edit_foto = st.file_uploader("Reemplazar foto (opcional)", type=["jpg", "jpeg", "png", "webp"], key=f"edit_img_{insp['id']}")
+
+                        col_e1, col_e2 = st.columns(2)
+                        with col_e1:
+                            if st.button("💾 Actualizar", key=f"btn_save_{insp['id']}"):
+                                url_foto_edit = None
+                                if edit_foto:
+                                    bytes_f = edit_foto.getvalue()
+                                    path = f"{punto_actual['id']}/{edit_fecha}_{edit_foto.name.replace(' ', '_')}"
+                                    url_foto_edit = subir_archivo_supabase("fotos", path, bytes_f, edit_foto.type)
+                                
+                                try:
+                                    actualizar_inspeccion(insp['id'], edit_fecha, edit_valor, insp['unidad_medicion'], edit_sev, edit_obs, url_foto_edit)
+                                    st.success("Inspección modificada correctamente.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error al actualizar inspección: {e}")
+
+                        with col_e2:
+                            if st.button("🗑️ Eliminar", type="primary", key=f"btn_del_{insp['id']}"):
+                                try:
+                                    eliminar_inspeccion(insp['id'])
+                                    st.warning("Inspección eliminada.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error al eliminar inspección: {e}")
 
 # -----------------------------------------------------------------------------
 # TAB 3: SEMÁFORO Y GRÁFICAS DE EVOLUCIÓN
