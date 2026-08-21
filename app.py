@@ -2,10 +2,11 @@ import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
 import plotly.express as plotly_exp
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from fpdf import FPDF
 import datetime
 import io
+import requests
 from pdf2image import convert_from_bytes
 
 # -----------------------------------------------------------------------------
@@ -85,7 +86,6 @@ def obtener_inspecciones(punto_id=None, proyecto_id=None):
         res = supabase.table("inspecciones").select("*").eq("punto_id", punto_id).order("fecha", desc=False).execute()
         return res.data if res.data else []
     
-    # Obtención masiva para reportes
     res = supabase.table("inspecciones").select("*, puntos!inner(etiqueta, tipo_patologia, proyecto_id)").order("fecha", desc=False).execute()
     if res.data:
         if proyecto_id:
@@ -106,10 +106,41 @@ def crear_inspeccion(punto_id, fecha, valor, unidad, severidad, observacion, url
     return supabase.table("inspecciones").insert(data).execute()
 
 # -----------------------------------------------------------------------------
+# DIBUJAR PUNTOS EN LA IMAGEN DEL PLANO
+# -----------------------------------------------------------------------------
+def generar_imagen_con_puntos(url_plano, puntos):
+    try:
+        resp = requests.get(url_plano, timeout=10)
+        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+    except Exception as e:
+        st.error(f"Error al descargar la imagen del plano: {e}")
+        return None
+
+    draw = ImageDraw.Draw(img)
+    ancho, alto = img.size
+    
+    # Radio del marcador adaptado al tamaño de la imagen
+    r = max(12, int(min(ancho, alto) * 0.018))
+
+    for idx, p in enumerate(puntos):
+        # Convertir porcentaje a píxeles
+        cx = int((p["x_pct"] / 100.0) * ancho)
+        cy = int((p["y_pct"] / 100.0) * alto)
+
+        # Círculo rojo exterior y centro amarillo
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="#FF0000", outline="#FFFFFF", width=3)
+        draw.ellipse([cx - r//3, cy - r//3, cx + r//3, cy + r//3], fill="#FFFF00")
+
+        # Texto/Etiqueta flotante
+        texto = f" P{idx+1}: {p['etiqueta']} "
+        draw.text((cx + r + 4, cy - r), texto, fill="#000000")
+
+    return img
+
+# -----------------------------------------------------------------------------
 # LÓGICA DE DIAGNÓSTICO Y SEMÁFORO
 # -----------------------------------------------------------------------------
 def evaluar_semagoro(tipo_patologia, ultimo_valor, severidad):
-    """Retorna un estado de riesgo (Verde, Amarillo, Rojo) y recomendación."""
     if tipo_patologia == "Fisura/Grieta":
         if ultimo_valor >= 3.0 or severidad == "Crítica":
             return "🔴 CRÍTICO", "Riesgo estructural o penetración directa de agua. Requiere prueba de carga y sellado estructural epóxico urgente.", "red"
@@ -144,21 +175,18 @@ def generar_pdf_informe(proyecto, puntos, inspecciones_todas, df_costos):
     pdf.add_page()
     pdf.set_font("Arial", "B", 16)
     
-    # Encabezado
     pdf.cell(0, 10, f"INFORME TÉCNICO DE PATOLOGÍA EDILICIA", ln=True, align="C")
     pdf.set_font("Arial", "", 12)
     pdf.cell(0, 10, f"Proyecto: {proyecto['nombre']}", ln=True, align="C")
     pdf.cell(0, 5, f"Fecha de emisión: {datetime.date.today().strftime('%d/%m/%Y')}", ln=True, align="C")
     pdf.ln(10)
 
-    # Descripción
     pdf.set_font("Arial", "B", 12)
     pdf.cell(0, 8, "1. Resumen General del Proyecto", ln=True)
     pdf.set_font("Arial", "", 10)
     pdf.multi_cell(0, 5, proyecto.get("descripcion") or "Sin descripción proporcionada.")
     pdf.ln(5)
 
-    # Diagnóstico de Puntos
     pdf.set_font("Arial", "B", 12)
     pdf.cell(0, 8, "2. Puntos Monitoreados y Estado de Riesgo", ln=True)
     pdf.set_font("Arial", "", 10)
@@ -178,7 +206,6 @@ def generar_pdf_informe(proyecto, puntos, inspecciones_todas, df_costos):
 
     pdf.ln(5)
 
-    # Costos
     pdf.set_font("Arial", "B", 12)
     pdf.cell(0, 8, "3. Presupuesto Estimado de Reparación", ln=True)
     pdf.set_font("Arial", "", 9)
@@ -269,7 +296,6 @@ def tab_planos_y_puntos(proyecto_id):
             if st.button("Guardar Plano") and nombre_plano and archivo_plano:
                 ext = archivo_plano.name.split(".")[-1].lower()
                 
-                # Conversión si el archivo subido es PDF
                 if ext == "pdf":
                     try:
                         imagenes = convert_from_bytes(archivo_plano.getvalue(), first_page=1, last_page=1)
@@ -304,8 +330,10 @@ def tab_planos_y_puntos(proyecto_id):
         with st.form("form_punto"):
             etiqueta = st.text_input("Etiqueta (Ej: P1 - Columna C2, Grieta Losa 3)")
             tipo_patologia = st.selectbox("Tipo de Patología", ["Fisura/Grieta", "Humedad/Filtración", "Afectación en Losa"])
-            coord_x = st.number_input("Posición X (%) en plano", 0.0, 100.0, 50.0, 0.5)
-            coord_y = st.number_input("Posición Y (%) en plano", 0.0, 100.0, 50.0, 0.5)
+            
+            st.caption("Ubicación en Porcentaje (%) del Plano:")
+            coord_x = st.number_input("Posición X (0% = Izquierda, 100% = Derecha)", 0.0, 100.0, 50.0, 1.0)
+            coord_y = st.number_input("Posición Y (0% = Arriba, 100% = Abajo)", 0.0, 100.0, 50.0, 1.0)
             
             if st.form_submit_button("Registrar Punto") and etiqueta:
                 crear_punto(proyecto_id, plano_actual["id"], coord_x, coord_y, etiqueta, tipo_patologia)
@@ -316,7 +344,15 @@ def tab_planos_y_puntos(proyecto_id):
         st.subheader(f"Plano: {plano_actual['nombre']}")
         puntos = obtener_puntos(plano_id=plano_actual["id"])
         
-        st.image(plano_actual["ruta_archivo"], use_container_width=True)
+        # Renderizar la imagen con los círculos marcados
+        if puntos:
+            img_marcada = generar_imagen_con_puntos(plano_actual["ruta_archivo"], puntos)
+            if img_marcada:
+                st.image(img_marcada, use_container_width=True)
+            else:
+                st.image(plano_actual["ruta_archivo"], use_container_width=True)
+        else:
+            st.image(plano_actual["ruta_archivo"], use_container_width=True)
 
         if puntos:
             st.write("📍 **Puntos marcados:**")
