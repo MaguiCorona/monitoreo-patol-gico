@@ -2,12 +2,13 @@ import streamlit as st
 from supabase import create_client, Client
 import pandas as pd
 import plotly.express as plotly_exp
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from fpdf import FPDF
 import datetime
 import io
 import requests
 from pdf2image import convert_from_bytes
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 # -----------------------------------------------------------------------------
 # CONFIGURACIÓN DE PÁGINA
@@ -108,32 +109,39 @@ def crear_inspeccion(punto_id, fecha, valor, unidad, severidad, observacion, url
 # -----------------------------------------------------------------------------
 # DIBUJAR PUNTOS EN LA IMAGEN DEL PLANO
 # -----------------------------------------------------------------------------
-def generar_imagen_con_puntos(url_plano, puntos):
+@st.cache_data(ttl=60)
+def cargar_imagen_plano(url_plano):
     try:
         resp = requests.get(url_plano, timeout=10)
-        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+        return Image.open(io.BytesIO(resp.content)).convert("RGB")
     except Exception as e:
         st.error(f"Error al descargar la imagen del plano: {e}")
         return None
 
+def generar_imagen_con_puntos(img_base, puntos, punto_temp=None):
+    img = img_base.copy()
     draw = ImageDraw.Draw(img)
     ancho, alto = img.size
     
-    # Radio del marcador adaptado al tamaño de la imagen
     r = max(12, int(min(ancho, alto) * 0.018))
 
+    # Puntos ya guardados
     for idx, p in enumerate(puntos):
-        # Convertir porcentaje a píxeles
         cx = int((p["x_pct"] / 100.0) * ancho)
         cy = int((p["y_pct"] / 100.0) * alto)
 
-        # Círculo rojo exterior y centro amarillo
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="#FF0000", outline="#FFFFFF", width=3)
         draw.ellipse([cx - r//3, cy - r//3, cx + r//3, cy + r//3], fill="#FFFF00")
 
-        # Texto/Etiqueta flotante
         texto = f" P{idx+1}: {p['etiqueta']} "
         draw.text((cx + r + 4, cy - r), texto, fill="#000000")
+
+    # Punto temporal seleccionado con clic (Color azul)
+    if punto_temp:
+        cx = int((punto_temp[0] / 100.0) * ancho)
+        cy = int((punto_temp[1] / 100.0) * alto)
+        draw.ellipse([cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2], fill="#0066FF", outline="#FFFFFF", width=3)
+        draw.text((cx + r + 6, cy - r), " 📍 NUEVO SELECCIONADO ", fill="#000000")
 
     return img
 
@@ -277,7 +285,7 @@ def main():
         tab_presupuesto_y_pdf(proyecto_actual)
 
 # -----------------------------------------------------------------------------
-# TAB 1: PLANOS Y MARCADOR DE PUNTOS
+# TAB 1: PLANOS Y MARCADOR INTERACTIVO POR CLIC
 # -----------------------------------------------------------------------------
 def tab_planos_y_puntos(proyecto_id):
     planos = obtener_planos(proyecto_id)
@@ -325,37 +333,52 @@ def tab_planos_y_puntos(proyecto_id):
         plano_sel_nombre = st.selectbox("Plano Activo", [p["nombre"] for p in planos])
         plano_actual = next(p for p in planos if p["nombre"] == plano_sel_nombre)
 
-        st.divider()
-        st.subheader("Marcar Nuevo Punto Patológico")
-        with st.form("form_punto"):
-            etiqueta = st.text_input("Etiqueta (Ej: P1 - Columna C2, Grieta Losa 3)")
-            tipo_patologia = st.selectbox("Tipo de Patología", ["Fisura/Grieta", "Humedad/Filtración", "Afectación en Losa"])
-            
-            st.caption("Ubicación en Porcentaje (%) del Plano:")
-            coord_x = st.number_input("Posición X (0% = Izquierda, 100% = Derecha)", 0.0, 100.0, 50.0, 1.0)
-            coord_y = st.number_input("Posición Y (0% = Arriba, 100% = Abajo)", 0.0, 100.0, 50.0, 1.0)
-            
-            if st.form_submit_button("Registrar Punto") and etiqueta:
-                crear_punto(proyecto_id, plano_actual["id"], coord_x, coord_y, etiqueta, tipo_patologia)
-                st.success("Punto registrado.")
-                st.rerun()
+    # Cargar datos e imagen del plano
+    puntos = obtener_puntos(plano_id=plano_actual["id"])
+    img_base = cargar_imagen_plano(plano_actual["ruta_archivo"])
+
+    # Inicializar estado de coordenadas en la sesión
+    if "clic_x" not in st.session_state:
+        st.session_state.clic_x = 50.0
+    if "clic_y" not in st.session_state:
+        st.session_state.clic_y = 50.0
 
     with col_der:
         st.subheader(f"Plano: {plano_actual['nombre']}")
-        puntos = obtener_puntos(plano_id=plano_actual["id"])
+        st.caption("👇 **Hacé clic en cualquier lugar de la imagen para ubicar el punto exacto:**")
+
+        punto_temp_coord = (st.session_state.clic_x, st.session_state.clic_y)
         
-        # Renderizar la imagen con los círculos marcados
-        if puntos:
-            img_marcada = generar_imagen_con_puntos(plano_actual["ruta_archivo"], puntos)
-            if img_marcada:
-                st.image(img_marcada, use_container_width=True)
-            else:
-                st.image(plano_actual["ruta_archivo"], use_container_width=True)
-        else:
-            st.image(plano_actual["ruta_archivo"], use_container_width=True)
+        if img_base:
+            img_render = generar_imagen_con_puntos(img_base, puntos, punto_temp_coord)
+            
+            # Captura de clic del usuario
+            coordenadas = streamlit_image_coordinates(img_render, key="plano_clic")
+            
+            if coordenadas:
+                # Convertir las coordenadas de píxeles capturadas en porcentaje
+                ancho_img, alto_img = img_render.size
+                st.session_state.clic_x = round((coordenadas["x"] / ancho_img) * 100, 2)
+                st.session_state.clic_y = round((coordenadas["y"] / alto_img) * 100, 2)
+
+    with col_izq:
+        st.divider()
+        st.subheader("Marcar Nuevo Punto Patológico")
+        
+        etiqueta = st.text_input("Etiqueta (Ej: P1 - Columna C2, Grieta Losa 3)")
+        tipo_patologia = st.selectbox("Tipo de Patología", ["Fisura/Grieta", "Humedad/Filtración", "Afectación en Losa"])
+        
+        # Muestra y permite ajustar fino los porcentajes capturados con el clic
+        coord_x = st.number_input("Posición X (%)", 0.0, 100.0, float(st.session_state.clic_x), 0.1)
+        coord_y = st.number_input("Posición Y (%)", 0.0, 100.0, float(st.session_state.clic_y), 0.1)
+
+        if st.button("Registrar Punto") and etiqueta:
+            crear_punto(proyecto_id, plano_actual["id"], coord_x, coord_y, etiqueta, tipo_patologia)
+            st.success("Punto registrado correctamente.")
+            st.rerun()
 
         if puntos:
-            st.write("📍 **Puntos marcados:**")
+            st.write("📍 **Puntos guardados:**")
             df_pt = pd.DataFrame(puntos)[["etiqueta", "tipo_patologia", "x_pct", "y_pct"]]
             st.dataframe(df_pt, use_container_width=True)
 
