@@ -82,6 +82,18 @@ def crear_punto(proyecto_id, plano_id, x_pct, y_pct, etiqueta, tipo_patologia):
     }
     return supabase.table("puntos").insert(data).execute()
 
+def actualizar_punto(punto_id, x_pct, y_pct, etiqueta, tipo_patologia):
+    data = {
+        "x_pct": x_pct,
+        "y_pct": y_pct,
+        "etiqueta": etiqueta,
+        "tipo_patologia": tipo_patologia
+    }
+    return supabase.table("puntos").update(data).eq("id", punto_id).execute()
+
+def eliminar_punto(punto_id):
+    return supabase.table("puntos").delete().eq("id", punto_id).execute()
+
 def obtener_inspecciones(punto_id=None, proyecto_id=None):
     if punto_id:
         res = supabase.table("inspecciones").select("*").eq("punto_id", punto_id).order("fecha", desc=False).execute()
@@ -285,7 +297,7 @@ def main():
         tab_presupuesto_y_pdf(proyecto_actual)
 
 # -----------------------------------------------------------------------------
-# TAB 1: PLANOS Y MARCADOR INTERACTIVO POR CLIC
+# TAB 1: PLANOS Y MARCADOR INTERACTIVO POR CLIC + EDICIÓN
 # -----------------------------------------------------------------------------
 def tab_planos_y_puntos(proyecto_id):
     planos = obtener_planos(proyecto_id)
@@ -345,7 +357,7 @@ def tab_planos_y_puntos(proyecto_id):
 
     with col_der:
         st.subheader(f"Plano: {plano_actual['nombre']}")
-        st.caption("👇 **Hacé clic en cualquier lugar de la imagen para ubicar el punto exacto:**")
+        st.caption("👇 **Hacé clic en cualquier lugar de la imagen para ubicar/mover el marcador:**")
 
         punto_temp_coord = (st.session_state.clic_x, st.session_state.clic_y)
         
@@ -356,7 +368,6 @@ def tab_planos_y_puntos(proyecto_id):
             coordenadas = streamlit_image_coordinates(img_render, key="plano_clic")
             
             if coordenadas:
-                # Convertir las coordenadas de píxeles capturadas en porcentaje
                 ancho_img, alto_img = img_render.size
                 st.session_state.clic_x = round((coordenadas["x"] / ancho_img) * 100, 2)
                 st.session_state.clic_y = round((coordenadas["y"] / alto_img) * 100, 2)
@@ -365,10 +376,10 @@ def tab_planos_y_puntos(proyecto_id):
         st.divider()
         st.subheader("Marcar Nuevo Punto Patológico")
         
-        etiqueta = st.text_input("Etiqueta (Ej: P1 - Columna C2, Grieta Losa 3)")
-        tipo_patologia = st.selectbox("Tipo de Patología", ["Fisura/Grieta", "Humedad/Filtración", "Afectación en Losa"])
+        etiqueta = st.text_input("Etiqueta (Ej: P1 - Columna C2)")
+        tipos_opciones = ["Fisura/Grieta", "Humedad/Filtración", "Afectación en Losa"]
+        tipo_patologia = st.selectbox("Tipo de Patología", tipos_opciones)
         
-        # Muestra y permite ajustar fino los porcentajes capturados con el clic
         coord_x = st.number_input("Posición X (%)", 0.0, 100.0, float(st.session_state.clic_x), 0.1)
         coord_y = st.number_input("Posición Y (%)", 0.0, 100.0, float(st.session_state.clic_y), 0.1)
 
@@ -377,8 +388,40 @@ def tab_planos_y_puntos(proyecto_id):
             st.success("Punto registrado correctamente.")
             st.rerun()
 
+        # ---------------------------------------------------------------------
+        # SECCIÓN DE EDICIÓN Y ELIMINACIÓN DE PUNTOS
+        # ---------------------------------------------------------------------
         if puntos:
-            st.write("📍 **Puntos guardados:**")
+            st.divider()
+            st.subheader("✏️ Editar / Eliminar Puntos Existentes")
+            
+            opciones_puntos = {f"{p['etiqueta']} ({p['tipo_patologia']})": p for p in puntos}
+            punto_sel_label = st.selectbox("Seleccionar punto a editar/eliminar", list(opciones_puntos.keys()))
+            punto_a_editar = opciones_puntos[punto_sel_label]
+
+            with st.expander(" Modificar datos de este punto"):
+                edit_etiqueta = st.text_input("Editar Etiqueta", value=punto_a_editar["etiqueta"], key="edit_etiq")
+                
+                idx_tipo = tipos_opciones.index(punto_a_editar["tipo_patologia"]) if punto_a_editar["tipo_patologia"] in tipos_opciones else 0
+                edit_tipo = st.selectbox("Editar Tipo de Patología", tipos_opciones, index=idx_tipo, key="edit_tipo")
+                
+                edit_x = st.number_input("Editar Posición X (%)", 0.0, 100.0, float(punto_a_editar["x_pct"]), 0.1, key="edit_x")
+                edit_y = st.number_input("Editar Posición Y (%)", 0.0, 100.0, float(punto_a_editar["y_pct"]), 0.1, key="edit_y")
+
+                col_b1, col_b2 = st.columns(2)
+                with col_b1:
+                    if st.button("💾 Guardar Cambios"):
+                        actualizar_punto(punto_a_editar["id"], edit_x, edit_y, edit_etiqueta, edit_tipo)
+                        st.success("¡Punto actualizado!")
+                        st.rerun()
+
+                with col_b2:
+                    if st.button("🗑️ Eliminar Punto", type="primary"):
+                        eliminar_punto(punto_a_editar["id"])
+                        st.warning("Punto eliminado.")
+                        st.rerun()
+
+            st.write("📍 **Tabla de Puntos:**")
             df_pt = pd.DataFrame(puntos)[["etiqueta", "tipo_patologia", "x_pct", "y_pct"]]
             st.dataframe(df_pt, use_container_width=True)
 
