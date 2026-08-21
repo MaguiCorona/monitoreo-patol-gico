@@ -6,6 +6,7 @@ from PIL import Image
 from fpdf import FPDF
 import datetime
 import io
+from pdf2image import convert_from_bytes
 
 # -----------------------------------------------------------------------------
 # CONFIGURACIÓN DE PÁGINA
@@ -110,7 +111,6 @@ def crear_inspeccion(punto_id, fecha, valor, unidad, severidad, observacion, url
 def evaluar_semagoro(tipo_patologia, ultimo_valor, severidad):
     """Retorna un estado de riesgo (Verde, Amarillo, Rojo) y recomendación."""
     if tipo_patologia == "Fisura/Grieta":
-        # valor en mm
         if ultimo_valor >= 3.0 or severidad == "Crítica":
             return "🔴 CRÍTICO", "Riesgo estructural o penetración directa de agua. Requiere prueba de carga y sellado estructural epóxico urgente.", "red"
         elif ultimo_valor >= 1.0 or severidad == "Alta":
@@ -119,7 +119,6 @@ def evaluar_semagoro(tipo_patologia, ultimo_valor, severidad):
             return "🟢 BAJO", "Fisura superficial / de retracción. Monitorear periódicamente.", "green"
 
     elif tipo_patologia == "Humedad/Filtración":
-        # valor en % de humedad
         if ultimo_valor >= 50.0 or severidad == "Crítica":
             return "🔴 CRÍTICO", "Filtración severa con riesgo de degradación en armaduras o mampostería. Localizar fuga/membrana dañada de inmediato.", "red"
         elif ultimo_valor >= 20.0 or severidad == "Alta":
@@ -128,7 +127,6 @@ def evaluar_semagoro(tipo_patologia, ultimo_valor, severidad):
             return "🟢 BAJO", "Humedad residual o leve. Continuar seguimiento.", "green"
 
     elif tipo_patologia == "Afectación en Losa":
-        # valor en mm de flecha / grieta
         if ultimo_valor >= 5.0 or severidad in ["Alta", "Crítica"]:
             return "🔴 CRÍTICO", "Posible flecha excesiva o desprendimiento de hormigón/recubrimiento. Inspección con calculista urgente.", "red"
         elif ultimo_valor >= 2.0 or severidad == "Media":
@@ -263,17 +261,35 @@ def tab_planos_y_puntos(proyecto_id):
         
         with st.expander("➕ Subir Nuevo Plano"):
             nombre_plano = st.text_input("Nombre del Plano (Ej: Piso 1, Fachada Este)")
-            archivo_plano = st.file_uploader("Seleccionar imagen del plano", type=["jpg", "jpeg", "png", "webp"])
+            archivo_plano = st.file_uploader(
+                "Seleccionar plano (Imagen o PDF)", 
+                type=["jpg", "jpeg", "png", "webp", "pdf"]
+            )
             
             if st.button("Guardar Plano") and nombre_plano and archivo_plano:
-                file_bytes = archivo_plano.getvalue()
-                ext = archivo_plano.name.split(".")[-1]
-                path_str = f"{proyecto_id}/{nombre_plano.replace(' ', '_')}.{ext}"
+                ext = archivo_plano.name.split(".")[-1].lower()
                 
-                url_publica = subir_archivo_supabase("planos", path_str, file_bytes, archivo_plano.type)
+                # Conversión si el archivo subido es PDF
+                if ext == "pdf":
+                    try:
+                        imagenes = convert_from_bytes(archivo_plano.getvalue(), first_page=1, last_page=1)
+                        img_byte_arr = io.BytesIO()
+                        imagenes[0].save(img_byte_arr, format='PNG')
+                        file_bytes = img_byte_arr.getvalue()
+                        content_type = "image/png"
+                        path_str = f"{proyecto_id}/{nombre_plano.replace(' ', '_')}.png"
+                    except Exception as e:
+                        st.error(f"Error al procesar el archivo PDF: {e}")
+                        return
+                else:
+                    file_bytes = archivo_plano.getvalue()
+                    content_type = archivo_plano.type
+                    path_str = f"{proyecto_id}/{nombre_plano.replace(' ', '_')}.{ext}"
+                
+                url_publica = subir_archivo_supabase("planos", path_str, file_bytes, content_type)
                 if url_publica:
                     crear_plano(proyecto_id, nombre_plano, url_publica)
-                    st.success("Plano guardado.")
+                    st.success("Plano procesado y guardado correctamente.")
                     st.rerun()
 
         if not planos:
@@ -373,7 +389,6 @@ def tab_semaforo_y_graficas(proyecto_id):
         st.info("No hay datos cargados para analizar.")
         return
 
-    # Tarjetas de Semáforo
     cols = st.columns(3)
     for idx, p in enumerate(puntos):
         p_insps = [i for i in inspecciones_todas if i["punto_id"] == p["id"]]
@@ -401,7 +416,6 @@ def tab_semaforo_y_graficas(proyecto_id):
     st.subheader("📈 Evolución Temporal de las Patologías")
 
     if inspecciones_todas:
-        # Preparación de DataFrame para Plotly
         data = []
         for i in inspecciones_todas:
             data.append({
@@ -430,7 +444,6 @@ def tab_semaforo_y_graficas(proyecto_id):
 def tab_presupuesto_y_pdf(proyecto):
     st.subheader("💰 Presupuesto Estimado de Reparación")
 
-    # Tabla editable de costos
     datos_base = {
         "Material / Tarea": ["Inyección de resina epóxica", "Sellador poliuretánico", "Membrana elástomérica", "Mano de obra especializada"],
         "Cantidad": [10, 15, 20, 5],
