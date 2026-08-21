@@ -185,6 +185,14 @@ def evaluar_semagoro(tipo_patologia, ultimo_valor, severidad):
         else:
             return "🟢 BAJO", "Afectación dentro de tolerancias de servicio.", "green"
 
+    elif tipo_patologia == "Desprendimiento en Muros":
+        if ultimo_valor >= 5.0 or severidad in ["Alta", "Crítica"]:
+            return "🔴 CRÍTICO", "Riesgo de caída de revoque/revestimiento. Picar zona afectada, consolidar sustrato y rehacer revoque de inmediato.", "red"
+        elif ultimo_valor >= 1.5 or severidad == "Media":
+            return "🟡 MEDIO", "Desprendimiento parcial o abombamiento. Monitorear adherencia y reparar en corto plazo.", "orange"
+        else:
+            return "🟢 BAJO", "Fisuración o desprendimiento localizado puntual. Continuar seguimiento.", "green"
+
     return "🟢 BAJO", "Sin anomalías mayores.", "green"
 
 # -----------------------------------------------------------------------------
@@ -378,7 +386,7 @@ def tab_planos_y_puntos(proyecto_id):
         st.subheader("Marcar Nuevo Punto Patológico")
         
         etiqueta = st.text_input("Etiqueta (Ej: P1 - Columna C2)")
-        tipos_opciones = ["Fisura/Grieta", "Humedad/Filtración", "Afectación en Losa"]
+        tipos_opciones = ["Fisura/Grieta", "Humedad/Filtración", "Afectación en Losa", "Desprendimiento en Muros"]
         tipo_patologia = st.selectbox("Tipo de Patología", tipos_opciones)
         
         coord_x = st.number_input("Posición X (%)", 0.0, 100.0, float(st.session_state.clic_x), 0.1)
@@ -427,7 +435,7 @@ def tab_planos_y_puntos(proyecto_id):
             st.dataframe(df_pt, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 2: RELEVAMIENTO E INSPECCIONES (UNIDADES CORREGIDAS)
+# TAB 2: RELEVAMIENTO E INSPECCIONES
 # -----------------------------------------------------------------------------
 def tab_relevamiento(proyecto_id):
     puntos = obtener_puntos(proyecto_id=proyecto_id)
@@ -446,12 +454,10 @@ def tab_relevamiento(proyecto_id):
         
         tipo = punto_actual["tipo_patologia"]
         
-        # Asignación correcta de unidades según el tipo de patología:
+        # Asignación de unidades según el tipo de patología:
         if tipo == "Fisura/Grieta":
             unidad = "mm"
-        elif tipo == "Humedad/Filtración":
-            unidad = "m²"
-        elif tipo == "Afectación en Losa":
+        elif tipo in ["Humedad/Filtración", "Afectación en Losa", "Desprendimiento en Muros"]:
             unidad = "m²"
         else:
             unidad = "m²"
