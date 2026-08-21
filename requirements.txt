@@ -5,3 +5,4 @@ plotly
 pillow
 fpdf2
 pdf2image
+streamlit-image-coordinates
