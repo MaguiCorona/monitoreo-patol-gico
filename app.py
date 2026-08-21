@@ -622,7 +622,7 @@ def tab_semaforo_y_graficas(proyecto_id):
         st.info("Cargá mediciones para ver los gráficos de tendencias.")
 
 # -----------------------------------------------------------------------------
-# TAB 4: PRESUPUESTO EDITABLE E INFORME EXCEL / PDF
+# TAB 4: PRESUPUESTO EDITABLE E INFORME EXCEL / PDF (CON BLOQUEO Y REGENERACIÓN)
 # -----------------------------------------------------------------------------
 def tab_presupuesto_y_pdf(proyecto):
     st.subheader("💰 Presupuesto de Reparación y Planilla de Costos")
@@ -631,85 +631,112 @@ def tab_presupuesto_y_pdf(proyecto):
     puntos = obtener_puntos(proyecto_id=proyecto["id"])
     inspecciones_todas = obtener_inspecciones(proyecto_id=proyecto["id"])
 
-    # Generación de tareas recomendadas basándose en los puntos y sus mediciones
-    filas_iniciales = []
-    
-    if puntos:
-        for p in puntos:
-            p_insps = [i for i in inspecciones_todas if i["punto_id"] == p["id"]]
-            cant = float(p_insps[-1]["valor_medicion"]) if p_insps else 1.0
-            tipo = p["tipo_patologia"]
+    # Función interna para construir las filas de presupuesto leyendo de la BD
+    def construir_df_presupuesto_base():
+        filas = []
+        if puntos:
+            for p in puntos:
+                p_insps = [i for i in inspecciones_todas if i["punto_id"] == p["id"]]
+                cant = float(p_insps[-1]["valor_medicion"]) if p_insps else 1.0
+                tipo = p["tipo_patologia"]
 
-            if tipo == "Desprendimiento en Muros":
-                tarea = f"Picado de revoque en abombamiento/desprendimiento ({p['etiqueta']}), limpieza de sustrato y reconstrucción con azotado e impermeable fino."
-                mo = 12500.0  # Referencia Mano de Obra
-                mat = 8500.0   # Referencia Materiales
-            elif tipo == "Fisura/Grieta":
-                tarea = f"Apertura de fisura en V ({p['etiqueta']}), fijación de testigos, sellado con masa elástica de poliuretano y acabado superficial."
-                mo = 9500.0
-                mat = 7000.0
-            elif tipo == "Humedad/Filtración":
-                tarea = f"Retiro de revestimiento afectado por humedad ({p['etiqueta']}), aplicación de bloqueador de humedad y pintura impermeable."
-                mo = 14000.0
-                mat = 11000.0
-            elif tipo == "Afectación en Losa":
-                tarea = f"Tratamiento de corrosión en armadura ({p['etiqueta']}), cepillado, pasivado con pintura anticorrosiva y parcheo con mortero de alta resistencia."
-                mo = 18000.0
-                mat = 15000.0
-            else:
-                tarea = f"Tarea de reparación general en {p['etiqueta']}"
-                mo = 10000.0
-                mat = 8000.0
+                if tipo == "Desprendimiento en Muros":
+                    tarea = f"Picado de revoque en abombamiento/desprendimiento ({p['etiqueta']}), limpieza de sustrato y reconstrucción con azotado e impermeable fino."
+                    mo = 12500.0
+                    mat = 8500.0
+                elif tipo == "Fisura/Grieta":
+                    tarea = f"Apertura de fisura en V ({p['etiqueta']}), fijación de testigos, sellado con masa elástica de poliuretano y acabado superficial."
+                    mo = 9500.0
+                    mat = 7000.0
+                elif tipo == "Humedad/Filtración":
+                    tarea = f"Retiro de revestimiento afectado por humedad ({p['etiqueta']}), aplicación de bloqueador de humedad y pintura impermeable."
+                    mo = 14000.0
+                    mat = 11000.0
+                elif tipo == "Afectación en Losa":
+                    tarea = f"Tratamiento de corrosión en armadura ({p['etiqueta']}), cepillado, pasivado con pintura anticorrosiva y parcheo con mortero de alta resistencia."
+                    mo = 18000.0
+                    mat = 15000.0
+                else:
+                    tarea = f"Tarea de reparación general en {p['etiqueta']}"
+                    mo = 10000.0
+                    mat = 8000.0
 
-            filas_iniciales.append({
-                "Punto": p["etiqueta"],
-                "Tipo de Patología": tipo,
-                "Tareas a Realizar": tarea,
-                "Cantidad (m² o m)": cant,
-                "Mano de Obra ($)": mo,
-                "Materiales/Equipos ($)": mat
+                filas.append({
+                    "Punto": p["etiqueta"],
+                    "Tipo de Patología": tipo,
+                    "Tareas a Realizar": tarea,
+                    "Cantidad (m² o m)": cant,
+                    "Mano de Obra ($)": mo,
+                    "Materiales/Equipos ($)": mat
+                })
+        else:
+            filas.append({
+                "Punto": "P1 - Muro",
+                "Tipo de Patología": "Desprendimiento en Muros",
+                "Tareas a Realizar": "Picado de revoque existente con posterior colocación del nuevo hidrófugo y fino.",
+                "Cantidad (m² o m)": 15.0,
+                "Mano de Obra ($)": 12500.0,
+                "Materiales/Equipos ($)": 8500.0
             })
-    else:
-        # Ejemplo por defecto si aún no hay puntos cargados
-        filas_iniciales.append({
-            "Punto": "P1 - Muro",
-            "Tipo de Patología": "Desprendimiento en Muros",
-            "Tareas a Realizar": "Picado de revoque existente con posterior colocación del nuevo hidrófugo y fino.",
-            "Cantidad (m² o m)": 15.0,
-            "Mano de Obra ($)": 12500.0,
-            "Materiales/Equipos ($)": 8500.0
-        })
+        return pd.DataFrame(filas)
 
     key_state = f"df_presupuesto_{proyecto['id']}"
+
     if key_state not in st.session_state:
-        st.session_state[key_state] = pd.DataFrame(filas_iniciales)
+        st.session_state[key_state] = construir_df_presupuesto_base()
 
-    st.write("✏️ **Editor de Presupuesto (Podés modificar los valores o agregar más tareas directamente en la tabla):**")
+    # -------------------------------------------------------------------------
+    # CONTROLES: RESTABLECER Y MODO EDICIÓN
+    # -------------------------------------------------------------------------
+    col_ctrl1, col_ctrl2 = st.columns([1, 1])
 
-    # Tabla totalmente editable por el usuario
-    df_editado = st.data_editor(
-        st.session_state[key_state],
-        num_rows="dynamic",
-        use_container_width=True,
-        key=f"editor_costos_{proyecto['id']}"
-    )
+    with col_ctrl1:
+        modo_edicion = st.checkbox("🔓 Activar modo edición", value=False, help="Activá esta casilla únicamente cuando necesites modificar montos, cantidades o descripciones.")
 
-    # Cálculo dinámico de totales
-    df_editado["Precio Unitario ($)"] = df_editado["Mano de Obra ($)"] + df_editado["Materiales/Equipos ($)"]
-    df_editado["Subtotal ($)"] = df_editado["Cantidad (m² o m)"] * df_editado["Precio Unitario ($)"]
-    
-    total_presupuesto = df_editado["Subtotal ($)"].sum()
+    with col_ctrl2:
+        if st.button("🔄 Regenerar / Restablecer Tabla Original", help="Vuelve a generar la planilla desde cero con los puntos e inspecciones actuales."):
+            st.session_state[key_state] = construir_df_presupuesto_base()
+            st.success("¡Planilla restablecida a su versión inicial!")
+            st.rerun()
+
+    st.divider()
+
+    # -------------------------------------------------------------------------
+    # MOSTRAR Y EDITAR LA TABLA
+    # -------------------------------------------------------------------------
+    if modo_edicion:
+        st.info("✏️ **Modo Edición Activado:** Podés hacer doble clic en las celdas para modificar valores o agregar/eliminar filas.")
+        df_editado = st.data_editor(
+            st.session_state[key_state],
+            num_rows="dynamic",
+            use_container_width=True,
+            key=f"editor_costos_{proyecto['id']}"
+        )
+        st.session_state[key_state] = df_editado.copy()
+    else:
+        st.caption("🔒 **Modo Protegido (Solo Lectura):** Activá la casilla '🔓 Activar modo edición' arriba para hacer cambios.")
+        df_editado = st.session_state[key_state].copy()
+
+    df_calculado = df_editado.copy()
+    df_calculado["Precio Unitario ($)"] = df_calculado["Mano de Obra ($)"] + df_calculado["Materiales/Equipos ($)"]
+    df_calculado["Subtotal ($)"] = df_calculado["Cantidad (m² o m)"] * df_calculado["Precio Unitario ($)"]
+
+    if not modo_edicion:
+        st.dataframe(df_calculado, use_container_width=True)
+
+    total_presupuesto = df_calculado["Subtotal ($)"].sum()
 
     st.markdown(f"### 💰 **Costo Total Estimado del Proyecto:** `${total_presupuesto:,.2f}`")
 
-    # Botones de exportación (Excel y PDF)
+    # -------------------------------------------------------------------------
+    # BOTONES DE DESCARGA
+    # -------------------------------------------------------------------------
     col_dl1, col_dl2 = st.columns(2)
 
     with col_dl1:
-        # Generar archivo Excel en memoria (.xlsx)
         buffer_excel = io.BytesIO()
         with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
-            df_editado.to_excel(writer, index=False, sheet_name='Presupuesto_Reparacion')
+            df_calculado.to_excel(writer, index=False, sheet_name='Presupuesto_Reparacion')
         
         st.download_button(
             label="📊 Descargar Presupuesto en Excel (.xlsx)",
@@ -720,7 +747,7 @@ def tab_presupuesto_y_pdf(proyecto):
 
     with col_dl2:
         if st.button("📄 Generar Informe Completo en PDF"):
-            pdf_bytes = generar_pdf_informe(proyecto, puntos, inspecciones_todas, df_editado)
+            pdf_bytes = generar_pdf_informe(proyecto, puntos, inspecciones_todas, df_calculado)
             st.download_button(
                 label="📥 Descargar PDF de la Evaluación",
                 data=pdf_bytes,
