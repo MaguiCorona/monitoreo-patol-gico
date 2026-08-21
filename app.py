@@ -75,8 +75,8 @@ def crear_punto(proyecto_id, plano_id, x_pct, y_pct, etiqueta, tipo_patologia):
     data = {
         "proyecto_id": proyecto_id,
         "plano_id": plano_id,
-        "x_pct": x_pct,
-        "y_pct": y_pct,
+        "x_pct": float(x_pct),
+        "y_pct": float(y_pct),
         "etiqueta": etiqueta,
         "tipo_patologia": tipo_patologia
     }
@@ -84,8 +84,8 @@ def crear_punto(proyecto_id, plano_id, x_pct, y_pct, etiqueta, tipo_patologia):
 
 def actualizar_punto(punto_id, x_pct, y_pct, etiqueta, tipo_patologia):
     data = {
-        "x_pct": x_pct,
-        "y_pct": y_pct,
+        "x_pct": float(x_pct),
+        "y_pct": float(y_pct),
         "etiqueta": etiqueta,
         "tipo_patologia": tipo_patologia
     }
@@ -110,7 +110,7 @@ def crear_inspeccion(punto_id, fecha, valor, unidad, severidad, observacion, url
     data = {
         "punto_id": punto_id,
         "fecha": str(fecha),
-        "valor_medicion": valor,
+        "valor_medicion": float(valor),
         "unidad_medicion": unidad,
         "severidad_subjetiva": severidad,
         "descripcion": observacion,
@@ -121,7 +121,7 @@ def crear_inspeccion(punto_id, fecha, valor, unidad, severidad, observacion, url
 def actualizar_inspeccion(inspeccion_id, fecha, valor, unidad, severidad, observacion, url_foto=None):
     data = {
         "fecha": str(fecha),
-        "valor_medicion": valor,
+        "valor_medicion": float(valor),
         "unidad_medicion": unidad,
         "severidad_subjetiva": severidad,
         "descripcion": observacion
@@ -153,8 +153,8 @@ def generar_imagen_con_puntos(img_base, puntos, punto_temp=None):
     r = max(12, int(min(ancho, alto) * 0.018))
 
     for idx, p in enumerate(puntos):
-        cx = int((p["x_pct"] / 100.0) * ancho)
-        cy = int((p["y_pct"] / 100.0) * alto)
+        cx = int((float(p["x_pct"]) / 100.0) * ancho)
+        cy = int((float(p["y_pct"]) / 100.0) * alto)
 
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="#FF0000", outline="#FFFFFF", width=3)
         draw.ellipse([cx - r//3, cy - r//3, cx + r//3, cy + r//3], fill="#FFFF00")
@@ -163,8 +163,8 @@ def generar_imagen_con_puntos(img_base, puntos, punto_temp=None):
         draw.text((cx + r + 4, cy - r), texto, fill="#000000")
 
     if punto_temp:
-        cx = int((punto_temp[0] / 100.0) * ancho)
-        cy = int((punto_temp[1] / 100.0) * alto)
+        cx = int((float(punto_temp[0]) / 100.0) * ancho)
+        cy = int((float(punto_temp[1]) / 100.0) * alto)
         draw.ellipse([cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2], fill="#0066FF", outline="#FFFFFF", width=3)
         draw.text((cx + r + 6, cy - r), " 📍 NUEVO SELECCIONADO ", fill="#000000")
 
@@ -325,7 +325,7 @@ def main():
         tab_presupuesto_y_pdf(proyecto_actual)
 
 # -----------------------------------------------------------------------------
-# TAB 1: PLANOS Y MARCADOR INTERACTIVO
+# TAB 1: PLANOS Y MARCADOR INTERACTIVO (CORREGIDO PARA EVITAR ERRORES DE ZOOM)
 # -----------------------------------------------------------------------------
 def tab_planos_y_puntos(proyecto_id):
     planos = obtener_planos(proyecto_id)
@@ -383,18 +383,29 @@ def tab_planos_y_puntos(proyecto_id):
 
     with col_der:
         st.subheader(f"Plano: {plano_actual['nombre']}")
-        st.caption("👇 **Hacé clic en cualquier lugar de la imagen para ubicar/mover el marcador:**")
+        
+        # SLIDER DE TAMAÑO / ZOOM VISUAL
+        zoom_ancho = st.slider("📏 Tamaño del plano en pantalla (ancho en píxeles):", min_value=300, max_value=1200, value=650, step=50)
+        st.caption("👇 **Hacé clic en cualquier lugar del plano para marcar la posición:**")
 
         punto_temp_coord = (st.session_state.clic_x, st.session_state.clic_y)
         
         if img_base:
             img_render = generar_imagen_con_puntos(img_base, puntos, punto_temp_coord)
-            coordenadas = streamlit_image_coordinates(img_render, key="plano_clic")
             
-            if coordenadas:
-                ancho_img, alto_img = img_render.size
-                st.session_state.clic_x = round((coordenadas["x"] / ancho_img) * 100, 2)
-                st.session_state.clic_y = round((coordenadas["y"] / alto_img) * 100, 2)
+            # Redimensionar conservando proporción exacta
+            ancho_orig, alto_orig = img_render.size
+            proporcion = zoom_ancho / float(ancho_orig)
+            alto_display = int(alto_orig * proporcion)
+            
+            img_resizing = img_render.resize((zoom_ancho, alto_display), Image.Resampling.LANCZOS)
+            
+            # Obtener clic del usuario
+            coordenadas = streamlit_image_coordinates(img_resizing, key=f"plano_clic_{plano_actual['id']}")
+            
+            if coordenadas and isinstance(coordenadas, dict):
+                st.session_state.clic_x = round((coordenadas["x"] / float(zoom_ancho)) * 100, 2)
+                st.session_state.clic_y = round((coordenadas["y"] / float(alto_display)) * 100, 2)
 
     with col_izq:
         st.divider()
@@ -423,7 +434,7 @@ def tab_planos_y_puntos(proyecto_id):
             punto_sel_label = st.selectbox("Seleccionar punto a editar/eliminar", list(opciones_puntos.keys()))
             punto_a_editar = opciones_puntos[punto_sel_label]
 
-            with st.expander(" Modificar datos de este punto"):
+            with st.expander("Modificar datos de este punto"):
                 edit_etiqueta = st.text_input("Editar Etiqueta", value=punto_a_editar["etiqueta"], key="edit_etiq")
                 
                 idx_tipo = tipos_opciones.index(punto_a_editar["tipo_patologia"]) if punto_a_editar["tipo_patologia"] in tipos_opciones else 0
@@ -440,7 +451,7 @@ def tab_planos_y_puntos(proyecto_id):
                             st.success("¡Punto actualizado!")
                             st.rerun()
                         except Exception as e:
-                            st.error(f"❌ Error de Supabase al actualizar: {e}")
+                            st.error(f"❌ Error al actualizar: {e}")
 
                 with col_b2:
                     if st.button("🗑️ Eliminar Punto", type="primary"):
@@ -449,7 +460,7 @@ def tab_planos_y_puntos(proyecto_id):
                             st.warning("Punto eliminado.")
                             st.rerun()
                         except Exception as e:
-                            st.error(f"❌ Error de Supabase al eliminar: {e}")
+                            st.error(f"❌ Error al eliminar: {e}")
 
             st.write("📍 **Tabla de Puntos:**")
             df_pt = pd.DataFrame(puntos)[["etiqueta", "tipo_patologia", "x_pct", "y_pct"]]
@@ -631,7 +642,6 @@ def tab_presupuesto_y_pdf(proyecto):
     puntos = obtener_puntos(proyecto_id=proyecto["id"])
     inspecciones_todas = obtener_inspecciones(proyecto_id=proyecto["id"])
 
-    # Función interna para construir las filas de presupuesto leyendo de la BD
     def construir_df_presupuesto_base():
         filas = []
         if puntos:
@@ -685,9 +695,6 @@ def tab_presupuesto_y_pdf(proyecto):
     if key_state not in st.session_state:
         st.session_state[key_state] = construir_df_presupuesto_base()
 
-    # -------------------------------------------------------------------------
-    # CONTROLES: RESTABLECER Y MODO EDICIÓN
-    # -------------------------------------------------------------------------
     col_ctrl1, col_ctrl2 = st.columns([1, 1])
 
     with col_ctrl1:
@@ -701,9 +708,6 @@ def tab_presupuesto_y_pdf(proyecto):
 
     st.divider()
 
-    # -------------------------------------------------------------------------
-    # MOSTRAR Y EDITAR LA TABLA
-    # -------------------------------------------------------------------------
     if modo_edicion:
         st.info("✏️ **Modo Edición Activado:** Podés hacer doble clic en las celdas para modificar valores o agregar/eliminar filas.")
         df_editado = st.data_editor(
@@ -728,9 +732,6 @@ def tab_presupuesto_y_pdf(proyecto):
 
     st.markdown(f"### 💰 **Costo Total Estimado del Proyecto:** `${total_presupuesto:,.2f}`")
 
-    # -------------------------------------------------------------------------
-    # BOTONES DE DESCARGA
-    # -------------------------------------------------------------------------
     col_dl1, col_dl2 = st.columns(2)
 
     with col_dl1:
