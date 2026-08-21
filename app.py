@@ -325,7 +325,7 @@ def main():
         tab_presupuesto_y_pdf(proyecto_actual)
 
 # -----------------------------------------------------------------------------
-# TAB 1: PLANOS Y MARCADOR INTERACTIVO (CON CONTROL DE ZOOM / TAMAÑO)
+# TAB 1: PLANOS Y MARCADOR INTERACTIVO
 # -----------------------------------------------------------------------------
 def tab_planos_y_puntos(proyecto_id):
     planos = obtener_planos(proyecto_id)
@@ -383,28 +383,18 @@ def tab_planos_y_puntos(proyecto_id):
 
     with col_der:
         st.subheader(f"Plano: {plano_actual['nombre']}")
-        
-        # SLIDER PARA CONTROLAR ZOOM / ESCALA VISUAL
-        zoom_pct = st.slider("🔍 Ajustar tamaño / zoom del plano en pantalla (%):", min_value=30, max_value=100, value=60, step=5)
-        st.caption("👇 **Hacé clic en cualquier lugar del plano para ubicar/mover el marcador:**")
+        st.caption("👇 **Hacé clic en cualquier lugar de la imagen para ubicar/mover el marcador:**")
 
         punto_temp_coord = (st.session_state.clic_x, st.session_state.clic_y)
         
         if img_base:
             img_render = generar_imagen_con_puntos(img_base, puntos, punto_temp_coord)
-            
-            # Ajustar la imagen según el slider elegido por el usuario
-            ancho_orig, alto_orig = img_render.size
-            ancho_display = int(ancho_orig * (zoom_pct / 100.0))
-            alto_display = int(alto_orig * (zoom_pct / 100.0))
-            
-            img_resizing = img_render.resize((ancho_display, alto_display), Image.Resampling.LANCZOS)
-            
-            coordenadas = streamlit_image_coordinates(img_resizing, key="plano_clic")
+            coordenadas = streamlit_image_coordinates(img_render, key="plano_clic")
             
             if coordenadas:
-                st.session_state.clic_x = round((coordenadas["x"] / ancho_display) * 100, 2)
-                st.session_state.clic_y = round((coordenadas["y"] / alto_display) * 100, 2)
+                ancho_img, alto_img = img_render.size
+                st.session_state.clic_x = round((coordenadas["x"] / ancho_img) * 100, 2)
+                st.session_state.clic_y = round((coordenadas["y"] / alto_img) * 100, 2)
 
     with col_izq:
         st.divider()
