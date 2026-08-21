@@ -4,3 +4,4 @@ pandas
 plotly
 pillow
 fpdf2
+pdf2image
