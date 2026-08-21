@@ -1,8 +1,6 @@
 import streamlit as st
 from supabase import create_client, Client
-import io
 import pandas as pd
-from PIL import Image
 
 # -----------------------------------------------------------------------------
 # CONFIGURACIÓN DE PÁGINA
@@ -28,20 +26,14 @@ supabase = init_supabase()
 # FUNCIONES AUXILIARES DE ALMACENAMIENTO (STORAGE)
 # -----------------------------------------------------------------------------
 def subir_archivo_supabase(bucket: str, path: str, file_bytes: bytes, content_type: str):
-    """
-    Suba un archivo a un bucket de Supabase con la sintaxis correcta.
-    """
     try:
-        # En la librería supabase-py, 'upsert' debe ser cadena en minúscula 'true'
         supabase.storage.from_(bucket).upload(
             path=path,
             file=file_bytes,
             file_options={"content-type": content_type, "upsert": "true"}
         )
-        url_publica = supabase.storage.from_(bucket).get_public_url(path)
-        return url_publica
+        return supabase.storage.from_(bucket).get_public_url(path)
     except Exception as e:
-        # Si el archivo ya existe o hay un error de upsert, intentamos obtener la URL de todas formas
         try:
             return supabase.storage.from_(bucket).get_public_url(path)
         except Exception:
@@ -52,7 +44,7 @@ def subir_archivo_supabase(bucket: str, path: str, file_bytes: bytes, content_ty
 # FUNCIONES DE CONSULTA (DATABASE)
 # -----------------------------------------------------------------------------
 def obtener_proyectos():
-    res = supabase.table("proyectos").select("*").order("created_at", desc=True).execute()
+    res = supabase.table("proyectos").select("*").order("creado_en", desc=True).execute()
     return res.data if res.data else []
 
 def crear_proyecto(nombre, descripcion):
@@ -61,33 +53,39 @@ def crear_proyecto(nombre, descripcion):
     return res.data
 
 def obtener_planos(proyecto_id):
-    res = supabase.table("planos").select("*").eq("proyecto_id", proyecto_id).order("created_at", desc=True).execute()
+    res = supabase.table("planos").select("*").eq("proyecto_id", proyecto_id).order("subido_en", desc=True).execute()
     return res.data if res.data else []
 
 def crear_plano(proyecto_id, nombre, url_archivo):
-    data = {"proyecto_id": proyecto_id, "nombre": nombre, "url_archivo": url_archivo}
+    data = {"proyecto_id": proyecto_id, "nombre": nombre, "ruta_archivo": url_archivo}
     res = supabase.table("planos").insert(data).execute()
     return res.data
 
 def obtener_puntos(plano_id):
-    res = supabase.table("puntos").select("*").eq("plano_id", plano_id).order("created_at", desc=False).execute()
+    res = supabase.table("puntos").select("*").eq("plano_id", plano_id).order("creado_en", desc=False).execute()
     return res.data if res.data else []
 
-def crear_punto(plano_id, x, y, etiqueta):
-    data = {"plano_id": plano_id, "x": x, "y": y, "etiqueta": etiqueta}
+def crear_punto(proyecto_id, plano_id, x_pct, y_pct, etiqueta):
+    data = {
+        "proyecto_id": proyecto_id,
+        "plano_id": plano_id,
+        "x_pct": x_pct,
+        "y_pct": y_pct,
+        "etiqueta": etiqueta
+    }
     res = supabase.table("puntos").insert(data).execute()
     return res.data
 
 def obtener_inspecciones(punto_id):
-    res = supabase.table("inspecciones").select("*").eq("punto_id", punto_id).order("created_at", desc=True).execute()
+    res = supabase.table("inspecciones").select("*").eq("punto_id", punto_id).order("creado_en", desc=True).execute()
     return res.data if res.data else []
 
 def crear_inspeccion(punto_id, fecha, observacion, url_foto):
     data = {
         "punto_id": punto_id,
         "fecha": str(fecha),
-        "observacion": observacion,
-        "url_foto": url_foto
+        "descripcion": observacion,
+        "foto_path": url_foto
     }
     res = supabase.table("inspecciones").insert(data).execute()
     return res.data
@@ -98,7 +96,6 @@ def crear_inspeccion(punto_id, fecha, observacion, url_foto):
 def main():
     st.title("🏗️ Sistema de Monitoreo y Patología Edilicia")
 
-    # Selección o Creación de Proyecto
     proyectos = obtener_proyectos()
     
     st.sidebar.header("📁 Proyectos")
@@ -127,7 +124,6 @@ def main():
         st.info("Por favor, selecciona o crea un proyecto en el menú lateral para comenzar.")
         return
 
-    # Proyecto Seleccionado
     proyecto_actual = next(p for p in proyectos if p["nombre"] == opcion_proyecto)
     proyecto_id = proyecto_actual["id"]
 
@@ -135,29 +131,26 @@ def main():
     if proyecto_actual.get("descripcion"):
         st.caption(proyecto_actual["descripcion"])
 
-    # Pestañas principales
     tab1, tab2 = st.tabs(["📌 Planos y Puntos de Relevamiento", "📊 Historial e Inspecciones"])
 
     with tab1:
-        tab_plano_y_puntos(proyecto_id, proyecto_actual["nombre"])
+        tab_plano_y_puntos(proyecto_id)
 
     with tab2:
         tab_historial_e_inspecciones(proyecto_id)
 
 # -----------------------------------------------------------------------------
-# PESTAÑA 1: PLANOS Y PUNTOS
+# PESTAÑAS
 # -----------------------------------------------------------------------------
-def tab_plano_y_puntos(proyecto_id, proyecto_nombre):
+def tab_plano_y_puntos(proyecto_id):
     planos = obtener_planos(proyecto_id)
-
     col_izq, col_der = st.columns([1, 2])
 
     with col_izq:
         st.subheader("Planos Cargados")
         
-        # Subir nuevo plano
         with st.expander("➕ Cargar Nuevo Plano"):
-            nombre_plano = st.text_input("Nombre / Referencia del Plano")
+            nombre_plano = st.text_input("Nombre del Plano")
             archivo_plano = st.file_uploader("Seleccionar imagen del plano", type=["jpg", "jpeg", "png", "webp"])
             
             if st.button("Guardar Plano") and nombre_plano and archivo_plano:
@@ -183,13 +176,13 @@ def tab_plano_y_puntos(proyecto_id, proyecto_nombre):
         st.divider()
         st.subheader("Agregar Punto de Inspección")
         with st.form("form_nuevo_punto"):
-            etiqueta = st.text_input("Etiqueta del Punto (Ej: P1, Fischer Norte, Grieta A)")
+            etiqueta = st.text_input("Etiqueta del Punto (Ej: P1, Fischer Norte)")
             coord_x = st.number_input("Coordenada X (%)", min_value=0.0, max_value=100.0, value=50.0, step=0.1)
             coord_y = st.number_input("Coordenada Y (%)", min_value=0.0, max_value=100.0, value=50.0, step=0.1)
             btn_punto = st.form_submit_button("Marcar Punto")
 
             if btn_punto and etiqueta:
-                crear_punto(plano_id, coord_x, coord_y, etiqueta)
+                crear_punto(proyecto_id, plano_id, coord_x, coord_y, etiqueta)
                 st.success(f"Punto '{etiqueta}' registrado.")
                 st.rerun()
 
@@ -197,17 +190,13 @@ def tab_plano_y_puntos(proyecto_id, proyecto_nombre):
         st.subheader(f"Plano: {plano_actual['nombre']}")
         puntos = obtener_puntos(plano_actual["id"])
         
-        # Mostrar el plano con la URL directa de Supabase Storage
-        st.image(plano_actual["url_archivo"], use_container_width=True)
+        st.image(plano_actual["ruta_archivo"], use_container_width=True)
 
         if puntos:
             st.write("📍 **Puntos marcados en este plano:**")
-            df_puntos = pd.DataFrame(puntos)[["etiqueta", "x", "y", "created_at"]]
+            df_puntos = pd.DataFrame(puntos)[["etiqueta", "x_pct", "y_pct", "creado_en"]]
             st.dataframe(df_puntos, use_container_width=True)
 
-# -----------------------------------------------------------------------------
-# PESTAÑA 2: HISTORIAL E INSPECCIONES
-# -----------------------------------------------------------------------------
 def tab_historial_e_inspecciones(proyecto_id):
     planos = obtener_planos(proyecto_id)
     if not planos:
@@ -232,7 +221,7 @@ def tab_historial_e_inspecciones(proyecto_id):
     with col1:
         st.subheader(f"Nueva Inspección - Punto: {punto_actual['etiqueta']}")
         fecha_insp = st.date_input("Fecha de Inspección")
-        obs_insp = st.text_area("Observaciones técnicas / Mediciones")
+        obs_insp = st.text_area("Observaciones técnicas")
         foto_insp = st.file_uploader("Foto de la patología", type=["jpg", "jpeg", "png", "webp"], key="foto_insp")
 
         if st.button("Registrar Inspección"):
@@ -242,7 +231,6 @@ def tab_historial_e_inspecciones(proyecto_id):
                 url_foto = None
                 if foto_insp:
                     file_bytes = foto_insp.getvalue()
-                    ext = foto_insp.name.split(".")[-1]
                     path_str = f"{punto_id}/{fecha_insp}_{foto_insp.name.replace(' ', '_')}"
                     url_foto = subir_archivo_supabase("fotos", path_str, file_bytes, foto_insp.type)
 
@@ -260,9 +248,9 @@ def tab_historial_e_inspecciones(proyecto_id):
             for insp in inspecciones:
                 with st.container(border=True):
                     st.write(f"📅 **Fecha:** {insp['fecha']}")
-                    st.write(f"📝 {insp['observacion']}")
-                    if insp.get("url_foto"):
-                        st.image(insp["url_foto"], width=300)
+                    st.write(f"📝 {insp['descripcion']}")
+                    if insp.get("foto_path"):
+                        st.image(insp["foto_path"], width=300)
 
 if __name__ == "__main__":
     main()
