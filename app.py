@@ -170,20 +170,20 @@ def evaluar_semagoro(tipo_patologia, ultimo_valor, severidad):
             return "🟢 BAJO", "Fisura superficial / de retracción. Monitorear periódicamente.", "green"
 
     elif tipo_patologia == "Humedad/Filtración":
-        if ultimo_valor >= 50.0 or severidad == "Crítica":
+        if ultimo_valor >= 10.0 or severidad == "Crítica":
             return "🔴 CRÍTICO", "Filtración severa con riesgo de degradación en armaduras o mampostería. Localizar fuga/membrana dañada de inmediato.", "red"
-        elif ultimo_valor >= 20.0 or severidad == "Alta":
+        elif ultimo_valor >= 3.0 or severidad == "Alta":
             return "🟡 MEDIO", "Humedad persistente. Reparar impermeabilización y mejorar ventilación.", "orange"
         else:
             return "🟢 BAJO", "Humedad residual o leve. Continuar seguimiento.", "green"
 
     elif tipo_patologia == "Afectación en Losa":
-        if ultimo_valor >= 5.0 or severidad in ["Alta", "Crítica"]:
-            return "🔴 CRÍTICO", "Posible flecha excesiva o desprendimiento de hormigón/recubrimiento. Inspección con calculista urgente.", "red"
-        elif ultimo_valor >= 2.0 or severidad == "Media":
-            return "🟡 MEDIO", "Fisuración en zona tensionada de losa. Monitorear flechas y corrosión.", "orange"
+        if ultimo_valor >= 10.0 or severidad in ["Alta", "Crítica"]:
+            return "🔴 CRÍTICO", "Área de losa afectada severa. Inspección con calculista urgente.", "red"
+        elif ultimo_valor >= 3.0 or severidad == "Media":
+            return "🟡 MEDIO", "Área afectada moderada. Monitorear flechas y corrosión.", "orange"
         else:
-            return "🟢 BAJO", "Deflexión o fisura dentro de tolerancias de servicio.", "green"
+            return "🟢 BAJO", "Afectación dentro de tolerancias de servicio.", "green"
 
     return "🟢 BAJO", "Sin anomalías mayores.", "green"
 
@@ -215,13 +215,14 @@ def generar_pdf_informe(proyecto, puntos, inspecciones_todas, df_costos):
         p_insps = [i for i in inspecciones_todas if i["punto_id"] == p["id"]]
         ult_val = p_insps[-1]["valor_medicion"] if p_insps else 0.0
         ult_sev = p_insps[-1]["severidad_subjetiva"] if p_insps else "Baja"
+        ult_uni = p_insps[-1]["unidad_medicion"] if p_insps else ""
         
         estado, rec, _ = evaluar_semagoro(p["tipo_patologia"], ult_val, ult_sev)
         
         pdf.set_font("Arial", "B", 10)
         pdf.cell(0, 6, f"• Punto: {p['etiqueta']} ({p['tipo_patologia']}) - Estado: {estado}", ln=True)
         pdf.set_font("Arial", "", 9)
-        pdf.multi_cell(0, 5, f"  Última Medición: {ult_val} | Severidad: {ult_sev}\n  Recomendación: {rec}")
+        pdf.multi_cell(0, 5, f"  Última Medición: {ult_val} {ult_uni} | Severidad: {ult_sev}\n  Recomendación: {rec}")
         pdf.ln(2)
 
     pdf.ln(5)
@@ -426,7 +427,7 @@ def tab_planos_y_puntos(proyecto_id):
             st.dataframe(df_pt, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 2: RELEVAMIENTO E INSPECCIONES
+# TAB 2: RELEVAMIENTO E INSPECCIONES (UNIDADES CORREGIDAS)
 # -----------------------------------------------------------------------------
 def tab_relevamiento(proyecto_id):
     puntos = obtener_puntos(proyecto_id=proyecto_id)
@@ -444,10 +445,19 @@ def tab_relevamiento(proyecto_id):
         st.subheader(f"Cargar Inspección: {punto_actual['etiqueta']}")
         
         tipo = punto_actual["tipo_patologia"]
-        unidad = "mm" if tipo in ["Fisura/Grieta", "Afectación en Losa"] else "%"
+        
+        # Asignación correcta de unidades según el tipo de patología:
+        if tipo == "Fisura/Grieta":
+            unidad = "mm"
+        elif tipo == "Humedad/Filtración":
+            unidad = "m²"
+        elif tipo == "Afectación en Losa":
+            unidad = "m²"
+        else:
+            unidad = "m²"
         
         fecha = st.date_input("Fecha de medición", datetime.date.today())
-        valor = st.number_input(f"Medición registrada ({unidad})", min_value=0.0, value=0.5, step=0.1)
+        valor = st.number_input(f"Medición registrada ({unidad})", min_value=0.0, value=1.0, step=0.1)
         severidad = st.selectbox("Evaluación visual de severidad", ["Baja", "Media", "Alta", "Crítica"])
         obs = st.text_area("Observaciones técnicas y causas probables")
         foto = st.file_uploader("Foto de evidencia", type=["jpg", "jpeg", "png", "webp"])
@@ -496,6 +506,7 @@ def tab_semaforo_y_graficas(proyecto_id):
         p_insps = [i for i in inspecciones_todas if i["punto_id"] == p["id"]]
         ult_val = p_insps[-1]["valor_medicion"] if p_insps else 0.0
         ult_sev = p_insps[-1]["severidad_subjetiva"] if p_insps else "Baja"
+        ult_uni = p_insps[-1]["unidad_medicion"] if p_insps else ""
         
         estado, rec, color = evaluar_semagoro(p["tipo_patologia"], ult_val, ult_sev)
 
@@ -511,7 +522,7 @@ def tab_semaforo_y_graficas(proyecto_id):
                 else:
                     st.success(f"Estado: {estado}")
 
-                st.write(f"**Última Medición:** {ult_val}")
+                st.write(f"**Última Medición:** {ult_val} {ult_uni}")
                 st.write(f"**Diagnóstico:** {rec}")
 
     st.divider()
