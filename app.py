@@ -152,7 +152,6 @@ def generar_imagen_con_puntos(img_base, puntos, punto_temp=None):
     
     r = max(12, int(min(ancho, alto) * 0.018))
 
-    # Puntos ya guardados
     for idx, p in enumerate(puntos):
         cx = int((p["x_pct"] / 100.0) * ancho)
         cy = int((p["y_pct"] / 100.0) * alto)
@@ -163,7 +162,6 @@ def generar_imagen_con_puntos(img_base, puntos, punto_temp=None):
         texto = f" P{idx+1}: {p['etiqueta']} "
         draw.text((cx + r + 4, cy - r), texto, fill="#000000")
 
-    # Punto temporal seleccionado con clic (Color azul)
     if punto_temp:
         cx = int((punto_temp[0] / 100.0) * ancho)
         cy = int((punto_temp[1] / 100.0) * alto)
@@ -173,7 +171,7 @@ def generar_imagen_con_puntos(img_base, puntos, punto_temp=None):
     return img
 
 # -----------------------------------------------------------------------------
-# LÓGICA DE DIAGNÓSTICO Y SEMÁFORO
+# DIAGNÓSTICO Y SEMÁFORO
 # -----------------------------------------------------------------------------
 def evaluar_semagoro(tipo_patologia, ultimo_valor, severidad):
     if tipo_patologia == "Fisura/Grieta":
@@ -252,13 +250,19 @@ def generar_pdf_informe(proyecto, puntos, inspecciones_todas, df_costos):
 
     pdf.set_font("Arial", "B", 12)
     pdf.cell(0, 8, "3. Presupuesto Estimado de Reparación", ln=True)
-    pdf.set_font("Arial", "", 9)
+    pdf.set_font("Arial", "", 8)
 
     for _, row in df_costos.iterrows():
-        pdf.cell(0, 5, f"- {row['Material / Tarea']}: {row['Cantidad']} x ${row['Precio Unitario ($)']:,.2f} = ${row['Total ($)']:,.2f}", ln=True)
+        tarea = str(row.get('Tareas a Realizar', ''))
+        tipo_p = str(row.get('Tipo de Patología', ''))
+        cant = float(row.get('Cantidad (m² o m)', 0.0))
+        unit = float(row.get('Precio Unitario ($)', 0.0))
+        subt = float(row.get('Subtotal ($)', 0.0))
+        
+        pdf.cell(0, 5, f"- [{tipo_p}] {tarea} | Cant: {cant} | Unit: ${unit:,.2f} | Subtotal: ${subt:,.2f}", ln=True)
 
     pdf.ln(5)
-    total = df_costos["Total ($)"].sum()
+    total = df_costos["Subtotal ($)"].sum() if "Subtotal ($)" in df_costos else 0.0
     pdf.set_font("Arial", "B", 11)
     pdf.cell(0, 8, f"COSTO TOTAL ESTIMADO: ${total:,.2f}", ln=True)
 
@@ -321,7 +325,7 @@ def main():
         tab_presupuesto_y_pdf(proyecto_actual)
 
 # -----------------------------------------------------------------------------
-# TAB 1: PLANOS Y MARCADOR INTERACTIVO POR CLIC + EDICIÓN
+# TAB 1: PLANOS Y MARCADOR INTERACTIVO
 # -----------------------------------------------------------------------------
 def tab_planos_y_puntos(proyecto_id):
     planos = obtener_planos(proyecto_id)
@@ -369,11 +373,9 @@ def tab_planos_y_puntos(proyecto_id):
         plano_sel_nombre = st.selectbox("Plano Activo", [p["nombre"] for p in planos])
         plano_actual = next(p for p in planos if p["nombre"] == plano_sel_nombre)
 
-    # Cargar datos e imagen del plano
     puntos = obtener_puntos(plano_id=plano_actual["id"])
     img_base = cargar_imagen_plano(plano_actual["ruta_archivo"])
 
-    # Inicializar estado de coordenadas en la sesión
     if "clic_x" not in st.session_state:
         st.session_state.clic_x = 50.0
     if "clic_y" not in st.session_state:
@@ -387,8 +389,6 @@ def tab_planos_y_puntos(proyecto_id):
         
         if img_base:
             img_render = generar_imagen_con_puntos(img_base, puntos, punto_temp_coord)
-            
-            # Captura de clic del usuario
             coordenadas = streamlit_image_coordinates(img_render, key="plano_clic")
             
             if coordenadas:
@@ -415,9 +415,6 @@ def tab_planos_y_puntos(proyecto_id):
             except Exception as e:
                 st.error(f"❌ Error de Supabase al guardar el punto: {e}")
 
-        # ---------------------------------------------------------------------
-        # SECCIÓN DE EDICIÓN Y ELIMINACIÓN DE PUNTOS
-        # ---------------------------------------------------------------------
         if puntos:
             st.divider()
             st.subheader("✏️ Editar / Eliminar Puntos Existentes")
@@ -459,7 +456,7 @@ def tab_planos_y_puntos(proyecto_id):
             st.dataframe(df_pt, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 2: RELEVAMIENTO E INSPECCIONES (CON EDICIÓN Y ELIMINACIÓN)
+# TAB 2: RELEVAMIENTO E INSPECCIONES
 # -----------------------------------------------------------------------------
 def tab_relevamiento(proyecto_id):
     puntos = obtener_puntos(proyecto_id=proyecto_id)
@@ -478,7 +475,6 @@ def tab_relevamiento(proyecto_id):
         
         tipo = punto_actual["tipo_patologia"]
         
-        # Asignación de unidades según el tipo de patología
         if tipo == "Fisura/Grieta":
             unidad = "mm"
         elif tipo in ["Humedad/Filtración", "Afectación en Losa", "Desprendimiento en Muros"]:
@@ -523,7 +519,6 @@ def tab_relevamiento(proyecto_id):
                     if insp.get("foto_path"):
                         st.image(insp["foto_path"], width=280)
                     
-                    # Desplegable para editar esta inspección en particular
                     with st.expander(f"✏️ Editar / Eliminar esta inspección (#{idx+1})"):
                         try:
                             fecha_val = datetime.datetime.strptime(insp['fecha'], "%Y-%m-%d").date()
@@ -627,46 +622,111 @@ def tab_semaforo_y_graficas(proyecto_id):
         st.info("Cargá mediciones para ver los gráficos de tendencias.")
 
 # -----------------------------------------------------------------------------
-# TAB 4: PRESUPUESTO EDITABLE E INFORME PDF
+# TAB 4: PRESUPUESTO EDITABLE E INFORME EXCEL / PDF
 # -----------------------------------------------------------------------------
 def tab_presupuesto_y_pdf(proyecto):
-    st.subheader("💰 Presupuesto Estimado de Reparación")
-
-    datos_base = {
-        "Material / Tarea": ["Inyección de resina epóxica", "Sellador poliuretánico", "Membrana elástomérica", "Mano de obra especializada"],
-        "Cantidad": [10, 15, 20, 5],
-        "Precio Unitario ($)": [15000.0, 8500.0, 12000.0, 45000.0]
-    }
-    
-    if "df_presupuesto" not in st.session_state:
-        st.session_state.df_presupuesto = pd.DataFrame(datos_base)
-
-    df_editado = st.data_editor(
-        st.session_state.df_presupuesto,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="editor_costos"
-    )
-
-    df_editado["Total ($)"] = df_editado["Cantidad"] * df_editado["Precio Unitario ($)"]
-    total_presupuesto = df_editado["Total ($)"].sum()
-
-    st.markdown(f"### **Costo Total Estimado:** `${total_presupuesto:,.2f}`")
-
-    st.divider()
-    st.subheader("📄 Generación de Informe Completo en PDF")
+    st.subheader("💰 Presupuesto de Reparación y Planilla de Costos")
+    st.caption("Los costos de mano de obra y materiales están expresados en $/m² o $/m y pueden ser ajustados tomando como referencia publicaciones técnicas como Cifras, Vivienda o UOCRA.")
 
     puntos = obtener_puntos(proyecto_id=proyecto["id"])
     inspecciones_todas = obtener_inspecciones(proyecto_id=proyecto["id"])
 
-    if st.button("📥 Generar y Descargar Informe PDF"):
-        pdf_bytes = generar_pdf_informe(proyecto, puntos, inspecciones_todas, df_editado)
+    # Generación de tareas recomendadas basándose en los puntos y sus mediciones
+    filas_iniciales = []
+    
+    if puntos:
+        for p in puntos:
+            p_insps = [i for i in inspecciones_todas if i["punto_id"] == p["id"]]
+            cant = float(p_insps[-1]["valor_medicion"]) if p_insps else 1.0
+            tipo = p["tipo_patologia"]
+
+            if tipo == "Desprendimiento en Muros":
+                tarea = f"Picado de revoque en abombamiento/desprendimiento ({p['etiqueta']}), limpieza de sustrato y reconstrucción con azotado e impermeable fino."
+                mo = 12500.0  # Referencia Mano de Obra
+                mat = 8500.0   # Referencia Materiales
+            elif tipo == "Fisura/Grieta":
+                tarea = f"Apertura de fisura en V ({p['etiqueta']}), fijación de testigos, sellado con masa elástica de poliuretano y acabado superficial."
+                mo = 9500.0
+                mat = 7000.0
+            elif tipo == "Humedad/Filtración":
+                tarea = f"Retiro de revestimiento afectado por humedad ({p['etiqueta']}), aplicación de bloqueador de humedad y pintura impermeable."
+                mo = 14000.0
+                mat = 11000.0
+            elif tipo == "Afectación en Losa":
+                tarea = f"Tratamiento de corrosión en armadura ({p['etiqueta']}), cepillado, pasivado con pintura anticorrosiva y parcheo con mortero de alta resistencia."
+                mo = 18000.0
+                mat = 15000.0
+            else:
+                tarea = f"Tarea de reparación general en {p['etiqueta']}"
+                mo = 10000.0
+                mat = 8000.0
+
+            filas_iniciales.append({
+                "Punto": p["etiqueta"],
+                "Tipo de Patología": tipo,
+                "Tareas a Realizar": tarea,
+                "Cantidad (m² o m)": cant,
+                "Mano de Obra ($)": mo,
+                "Materiales/Equipos ($)": mat
+            })
+    else:
+        # Ejemplo por defecto si aún no hay puntos cargados
+        filas_iniciales.append({
+            "Punto": "P1 - Muro",
+            "Tipo de Patología": "Desprendimiento en Muros",
+            "Tareas a Realizar": "Picado de revoque existente con posterior colocación del nuevo hidrófugo y fino.",
+            "Cantidad (m² o m)": 15.0,
+            "Mano de Obra ($)": 12500.0,
+            "Materiales/Equipos ($)": 8500.0
+        })
+
+    key_state = f"df_presupuesto_{proyecto['id']}"
+    if key_state not in st.session_state:
+        st.session_state[key_state] = pd.DataFrame(filas_iniciales)
+
+    st.write("✏️ **Editor de Presupuesto (Podés modificar los valores o agregar más tareas directamente en la tabla):**")
+
+    # Tabla totalmente editable por el usuario
+    df_editado = st.data_editor(
+        st.session_state[key_state],
+        num_rows="dynamic",
+        use_container_width=True,
+        key=f"editor_costos_{proyecto['id']}"
+    )
+
+    # Cálculo dinámico de totales
+    df_editado["Precio Unitario ($)"] = df_editado["Mano de Obra ($)"] + df_editado["Materiales/Equipos ($)"]
+    df_editado["Subtotal ($)"] = df_editado["Cantidad (m² o m)"] * df_editado["Precio Unitario ($)"]
+    
+    total_presupuesto = df_editado["Subtotal ($)"].sum()
+
+    st.markdown(f"### 💰 **Costo Total Estimado del Proyecto:** `${total_presupuesto:,.2f}`")
+
+    # Botones de exportación (Excel y PDF)
+    col_dl1, col_dl2 = st.columns(2)
+
+    with col_dl1:
+        # Generar archivo Excel en memoria (.xlsx)
+        buffer_excel = io.BytesIO()
+        with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
+            df_editado.to_excel(writer, index=False, sheet_name='Presupuesto_Reparacion')
+        
         st.download_button(
-            label="Descargar PDF generado",
-            data=pdf_bytes,
-            file_name=f"Informe_Patologias_{proyecto['nombre'].replace(' ', '_')}.pdf",
-            mime="application/pdf"
+            label="📊 Descargar Presupuesto en Excel (.xlsx)",
+            data=buffer_excel.getvalue(),
+            file_name=f"Presupuesto_Reparaciones_{proyecto['nombre'].replace(' ', '_')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
+    with col_dl2:
+        if st.button("📄 Generar Informe Completo en PDF"):
+            pdf_bytes = generar_pdf_informe(proyecto, puntos, inspecciones_todas, df_editado)
+            st.download_button(
+                label="📥 Descargar PDF de la Evaluación",
+                data=pdf_bytes,
+                file_name=f"Informe_Patologias_{proyecto['nombre'].replace(' ', '_')}.pdf",
+                mime="application/pdf"
+            )
 
 if __name__ == "__main__":
     main()
