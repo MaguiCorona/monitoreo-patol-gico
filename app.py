@@ -171,32 +171,60 @@ def generar_imagen_con_puntos(img_base, puntos, punto_temp=None):
     return img
 
 # -----------------------------------------------------------------------------
-# DIAGNÓSTICO Y SEMÁFORO
+# DIAGNÓSTICO, SEVERIDAD AUTOMÁTICA Y SEMÁFORO
 # -----------------------------------------------------------------------------
+def determinar_severidad_automatica(tipo_patologia, valor):
+    """Calcula automáticamente la severidad sugerida según la dimensión/medición."""
+    v = float(valor)
+    
+    if tipo_patologia == "Fisura/Grieta":
+        if v < 1.0:
+            return "Baja"
+        elif 1.0 <= v < 3.0:
+            return "Media"
+        elif 3.0 <= v <= 5.0:
+            return "Alta"
+        else:
+            return "Crítica"
+
+    elif tipo_patologia in ["Humedad/Filtración", "Desprendimiento en Muros", "Afectación en Losa"]:
+        if v < 1.5:
+            return "Baja"
+        elif 1.5 <= v < 3.0:
+            return "Media"
+        elif 3.0 <= v < 5.0:
+            return "Alta"
+        else:
+            return "Crítica"
+
+    return "Baja"
+
 def evaluar_semagoro(tipo_patologia, ultimo_valor, severidad):
     if tipo_patologia == "Fisura/Grieta":
-        if ultimo_valor >= 3.0 or severidad == "Crítica":
+        if ultimo_valor >= 5.0 or severidad == "Crítica":
             return "🔴 CRÍTICO", "Riesgo estructural o penetración directa de agua. Requiere prueba de carga y sellado estructural epóxico urgente.", "red"
-        elif ultimo_valor >= 1.0 or severidad == "Alta":
+        elif ultimo_valor >= 3.0 or severidad == "Alta":
+            return "🟠 ALTO", "Fisura pronunciada activa. Inspeccionar y colocar testigos estructurales de control.", "orange"
+        elif ultimo_valor >= 1.0 or severidad == "Media":
             return "🟡 MEDIO", "Fisura activa en monitoreo. Colocar testigo y sellar con sellador elástico.", "orange"
         else:
             return "🟢 BAJO", "Fisura superficial / de retracción. Monitorear periódicamente.", "green"
 
     elif tipo_patologia == "Humedad/Filtración":
-        if severidad == "Crítica" or ultimo_valor >= 10.0:
+        if severidad == "Crítica" or ultimo_valor >= 5.0:
             return "🔴 CRÍTICO", "Filtración activa con goteo continuo, moho denso o desprendimiento generalizado. Riesgo de degradación de estructuras y ambiente insalubre. Reparar impermeabilización de inmediato.", "red"
-        elif severidad == "Alta":
-            return "🟠 ALTO", "Humedad de remonte capilar/eflorescencias severas o ampollamiento extendido. Intervenir barrera impermeable o impermeabilizar superficie afectada.", "orange"
-        elif severidad == "Media" or ultimo_valor >= 3.0:
+        elif severidad == "Alta" or ultimo_valor >= 3.0:
+            return "🟠 ALTO", "Humedad de remonte capilar/eflorescencias severas o ampollamiento extendido. Intervenir barrera impermeable.", "orange"
+        elif severidad == "Media" or ultimo_valor >= 1.5:
             return "🟡 MEDIO", "Mancha de humedad persistente con eflorescencias aisladas. Revisar sellados, albardillas o cañerías cercanas.", "orange"
         else:
             return "🟢 BAJO", "Mancha de humedad residual o seca sin eflorescencias activas. Monitorear evolución.", "green"
 
     elif tipo_patologia == "Afectación en Losa":
-        if ultimo_valor >= 10.0 or severidad in ["Alta", "Crítica"]:
-            return "🔴 CRÍTICO", "Área de losa afectada severa. Inspección con calculista urgente.", "red"
-        elif ultimo_valor >= 3.0 or severidad == "Media":
-            return "🟡 MEDIO", "Área afectada moderada. Monitorear flechas y corrosión.", "orange"
+        if ultimo_valor >= 5.0 or severidad in ["Alta", "Crítica"]:
+            return "🔴 CRÍTICO", "Área de losa afectada severa. Inspección con calculista urgente y pasivado de armaduras.", "red"
+        elif ultimo_valor >= 1.5 or severidad == "Media":
+            return "🟡 MEDIO", "Área afectada moderada. Monitorear flechas y fisuración.", "orange"
         else:
             return "🟢 BAJO", "Afectación dentro de tolerancias de servicio.", "green"
 
@@ -466,7 +494,7 @@ def tab_planos_y_puntos(proyecto_id):
             st.dataframe(df_pt, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 2: RELEVAMIENTO E INSPECCIONES (INCLUYE GUÍA DE CRITERIOS)
+# TAB 2: RELEVAMIENTO E INSPECCIONES (CON SELECCIÓN AUTOMÁTICA DE SEVERIDAD)
 # -----------------------------------------------------------------------------
 def tab_relevamiento(proyecto_id):
     puntos = obtener_puntos(proyecto_id=proyecto_id)
@@ -478,30 +506,12 @@ def tab_relevamiento(proyecto_id):
     punto_idx = [f"{p['etiqueta']} ({p['tipo_patologia']})" for p in puntos].index(punto_nom)
     punto_actual = puntos[punto_idx]
 
-    # --- RECUADRO CON LA DEFINICIÓN DE CRITERIOS DE SEVERIDAD ---
+    # --- RECUADRO GUÍA DE CRITERIOS DE SEVERIDAD ---
     with st.expander("📋 **Guía y Criterios Estandarizados de Evaluación de Severidad**", expanded=False):
         st.info("""
-        **Utilizá estas definiciones para seleccionar el nivel de severidad correspondiente:**
-
-        * 🟢 **Baja:** 
-          * **Fisuras:** Superficiales o de retracción hidráulica/pintura (ancho < 1 mm).
-          * **Humedad:** Cambios leves de coloración en superficie, manchas residuales o secas sin humedad al tacto.
-          * **Afectación / Desprendimiento:** Afecciones meramente estéticas sin desprendimiento del soporte.
-
-        * 🟡 **Media:** 
-          * **Fisuras:** Activas o de asentamiento inicial (ancho entre 1 mm y 3 mm).
-          * **Humedad:** Humedad activa al tacto, mancha delimitada, aparición de salitre (eflorescencias leves) o ampollas puntuales en pintura.
-          * **Afectación / Desprendimiento:** Revoque abombado o desprendimiento parcial en áreas reducidas (< 1.5 m²).
-
-        * 🟠 **Alta:** 
-          * **Fisuras:** Grietas pronunciadas (ancho entre 3 mm y 5 mm).
-          * **Humedad:** Humedad por remonte capilar/filtración continua, presencia de eflorescencias severas, desprendimiento de revestimiento por humedad o ampollado extendido.
-          * **Afectación / Desprendimiento:** Áreas extensas (1.5 m² a 5 m²) o inicio de manchas de óxido en elementos de hormigón armado.
-
-        * 🔴 **Crítica:** 
-          * **Fisuras:** Grietas estructurales o pasantes (ancho > 5 mm o falla a cortante/flexión).
-          * **Humedad / Losa:** Filtración activa con goteo constante, formación de moho/hongos denso, o corrosión severa de armaduras expuestas por filtración.
-          * **Riesgo:** Peligro inminente de caída de material en altura o compromiso de la seguridad estructural.
+        **Reglas de cálculo automático de severidad según la dimensión:**
+        * **Fisuras (mm):** `< 1.0 mm` → 🟢 **Baja** | `1.0 a 2.9 mm` → 🟡 **Media** | `3.0 a 5.0 mm` → 🟠 **Alta** | `> 5.0 mm` → 🔴 **Crítica**
+        * **Humedad / Desprendimientos / Losas (m²):** `< 1.5 m²` → 🟢 **Baja** | `1.5 a 2.9 m²` → 🟡 **Media** | `3.0 a 4.9 m²` → 🟠 **Alta** | `≥ 5.0 m²` → 🔴 **Crítica**
         """)
 
     col1, col2 = st.columns([1, 1])
@@ -510,17 +520,19 @@ def tab_relevamiento(proyecto_id):
         st.subheader(f"Cargar Nueva Inspección: {punto_actual['etiqueta']}")
         
         tipo = punto_actual["tipo_patologia"]
-        
-        if tipo == "Fisura/Grieta":
-            unidad = "mm"
-        elif tipo in ["Humedad/Filtración", "Afectación en Losa", "Desprendimiento en Muros"]:
-            unidad = "m²"
-        else:
-            unidad = "m²"
+        unidad = "mm" if tipo == "Fisura/Grieta" else "m²"
         
         fecha = st.date_input("Fecha de medición", datetime.date.today())
         valor = st.number_input(f"Medición registrada ({unidad})", min_value=0.0, value=1.0, step=0.1)
-        severidad = st.selectbox("Evaluación visual de severidad (consultar guía arriba)", ["Baja", "Media", "Alta", "Crítica"])
+        
+        # Selección e indicación automática de severidad según la dimensión
+        sev_auto = determinar_severidad_automatica(tipo, valor)
+        severidades_opts = ["Baja", "Media", "Alta", "Crítica"]
+        idx_auto = severidades_opts.index(sev_auto)
+        
+        st.caption(f"🤖 Severidad sugerida automáticamente según dimensión ({valor} {unidad}): **{sev_auto}**")
+        severidad = st.selectbox("Evaluación de severidad", severidades_opts, index=idx_auto)
+        
         obs = st.text_area("Observaciones técnicas y causas probables")
         foto = st.file_uploader("Foto de evidencia", type=["jpg", "jpeg", "png", "webp"])
 
@@ -545,8 +557,6 @@ def tab_relevamiento(proyecto_id):
         if not inspecciones:
             st.caption("Aún no hay mediciones registradas.")
         else:
-            severidades_opts = ["Baja", "Media", "Alta", "Crítica"]
-            
             for idx, insp in enumerate(inspecciones):
                 with st.container(border=True):
                     st.write(f"📅 **Fecha:** {insp['fecha']} | **Valor:** {insp['valor_medicion']} {insp['unidad_medicion']}")
@@ -564,8 +574,10 @@ def tab_relevamiento(proyecto_id):
                         edit_fecha = st.date_input("Fecha", value=fecha_val, key=f"edit_f_{insp['id']}")
                         edit_valor = st.number_input(f"Medición ({insp['unidad_medicion']})", min_value=0.0, value=float(insp['valor_medicion']), step=0.1, key=f"edit_v_{insp['id']}")
                         
-                        idx_sev = severidades_opts.index(insp['severidad_subjetiva']) if insp['severidad_subjetiva'] in severidades_opts else 0
-                        edit_sev = st.selectbox("Severidad", severidades_opts, index=idx_sev, key=f"edit_s_{insp['id']}")
+                        edit_sev_auto = determinar_severidad_automatica(tipo, edit_valor)
+                        idx_edit_sev = severidades_opts.index(insp['severidad_subjetiva']) if insp['severidad_subjetiva'] in severidades_opts else severidades_opts.index(edit_sev_auto)
+                        
+                        edit_sev = st.selectbox("Severidad", severidades_opts, index=idx_edit_sev, key=f"edit_s_{insp['id']}")
                         edit_obs = st.text_area("Observaciones", value=insp.get('descripcion', ''), key=f"edit_o_{insp['id']}")
                         edit_foto = st.file_uploader("Reemplazar foto (opcional)", type=["jpg", "jpeg", "png", "webp"], key=f"edit_img_{insp['id']}")
 
@@ -611,8 +623,8 @@ def tab_semaforo_y_graficas(proyecto_id):
     for idx, p in enumerate(puntos):
         p_insps = [i for i in inspecciones_todas if i["punto_id"] == p["id"]]
         ult_val = p_insps[-1]["valor_medicion"] if p_insps else 0.0
-        ult_sev = p_insps[-1]["severidad_subjetiva"] if p_insps else "Baja"
-        ult_uni = p_insps[-1]["unidad_medicion"] if p_insps else ""
+        ult_sev = p_insps[-1]["severidad_subjetiva"] if p_insps else determinar_severidad_automatica(p["tipo_patologia"], ult_val)
+        ult_uni = p_insps[-1]["unidad_medicion"] if p_insps else ("mm" if p["tipo_patologia"] == "Fisura/Grieta" else "m²")
         
         estado, rec, color = evaluar_semagoro(p["tipo_patologia"], ult_val, ult_sev)
 
@@ -629,6 +641,7 @@ def tab_semaforo_y_graficas(proyecto_id):
                     st.success(f"Estado: {estado}")
 
                 st.write(f"**Última Medición:** {ult_val} {ult_uni}")
+                st.write(f"**Severidad:** {ult_sev}")
                 st.write(f"**Diagnóstico:** {rec}")
 
     st.divider()
