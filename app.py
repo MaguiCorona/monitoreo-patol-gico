@@ -325,7 +325,7 @@ def main():
         tab_presupuesto_y_pdf(proyecto_actual)
 
 # -----------------------------------------------------------------------------
-# TAB 1: PLANOS Y MARCADOR INTERACTIVO (CORREGIDO PARA EVITAR ERRORES DE ZOOM)
+# TAB 1: PLANOS Y MARCADOR INTERACTIVO
 # -----------------------------------------------------------------------------
 def tab_planos_y_puntos(proyecto_id):
     planos = obtener_planos(proyecto_id)
@@ -384,7 +384,6 @@ def tab_planos_y_puntos(proyecto_id):
     with col_der:
         st.subheader(f"Plano: {plano_actual['nombre']}")
         
-        # SLIDER DE TAMAÑO / ZOOM VISUAL
         zoom_ancho = st.slider("📏 Tamaño del plano en pantalla (ancho en píxeles):", min_value=300, max_value=1200, value=650, step=50)
         st.caption("👇 **Hacé clic en cualquier lugar del plano para marcar la posición:**")
 
@@ -393,14 +392,12 @@ def tab_planos_y_puntos(proyecto_id):
         if img_base:
             img_render = generar_imagen_con_puntos(img_base, puntos, punto_temp_coord)
             
-            # Redimensionar conservando proporción exacta
             ancho_orig, alto_orig = img_render.size
             proporcion = zoom_ancho / float(ancho_orig)
             alto_display = int(alto_orig * proporcion)
             
             img_resizing = img_render.resize((zoom_ancho, alto_display), Image.Resampling.LANCZOS)
             
-            # Obtener clic del usuario
             coordenadas = streamlit_image_coordinates(img_resizing, key=f"plano_clic_{plano_actual['id']}")
             
             if coordenadas and isinstance(coordenadas, dict):
@@ -467,7 +464,7 @@ def tab_planos_y_puntos(proyecto_id):
             st.dataframe(df_pt, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 2: RELEVAMIENTO E INSPECCIONES
+# TAB 2: RELEVAMIENTO E INSPECCIONES (INCLUYE GUÍA DE CRITERIOS)
 # -----------------------------------------------------------------------------
 def tab_relevamiento(proyecto_id):
     puntos = obtener_puntos(proyecto_id=proyecto_id)
@@ -478,6 +475,32 @@ def tab_relevamiento(proyecto_id):
     punto_nom = st.selectbox("Seleccionar Punto de Monitoreo", [f"{p['etiqueta']} ({p['tipo_patologia']})" for p in puntos])
     punto_idx = [f"{p['etiqueta']} ({p['tipo_patologia']})" for p in puntos].index(punto_nom)
     punto_actual = puntos[punto_idx]
+
+    # --- RECUADRO CON LA DEFINICIÓN DE CRITERIOS DE SEVERIDAD ---
+    with st.expander("📋 **Guía y Criterios Estandarizados de Evaluación de Severidad**", expanded=False):
+        st.info("""
+        **Utilizá estas definiciones para seleccionar el nivel de severidad correspondiente:**
+
+        * 🟢 **Baja:** 
+          * **Fisuras:** Superficiales o de retracción hidráulica/pintura (ancho < 1 mm).
+          * **Humedad:** Manchas secas o residuales sin filtración activa.
+          * **Afectación / Desprendimiento:** Afecciones meramente estéticas sin desprendimiento del soporte.
+
+        * 🟡 **Media:** 
+          * **Fisuras:** Activas o de asentamiento inicial (ancho entre 1 mm y 3 mm).
+          * **Humedad:** Filtración recurrente con eflorescencias (salitre).
+          * **Afectación / Desprendimiento:** Revoque abombado o desprendimiento parcial en áreas reducidas (< 1.5 m²).
+
+        * 🟠 **Alta:** 
+          * **Fisuras:** Grietas pronunciadas (ancho entre 3 mm y 5 mm).
+          * **Humedad:** Filtración continua con goteo o degradación del material.
+          * **Afectación / Desprendimiento:** Áreas extensas (1.5 m² a 5 m²) o inicio de manchas de óxido en elementos de hormigón armado.
+
+        * 🔴 **Crítica:** 
+          * **Fisuras:** Grietas estructurales o pasantes (ancho > 5 mm o falla a cortante/flexión).
+          * **Humedad / Losa:** Corrosión severa con pérdida de sección en armaduras o expulsión de recubrimiento.
+          * **Riesgo:** Peligro inminente de caída de material en altura o compromiso de la seguridad estructural.
+        """)
 
     col1, col2 = st.columns([1, 1])
 
@@ -495,7 +518,7 @@ def tab_relevamiento(proyecto_id):
         
         fecha = st.date_input("Fecha de medición", datetime.date.today())
         valor = st.number_input(f"Medición registrada ({unidad})", min_value=0.0, value=1.0, step=0.1)
-        severidad = st.selectbox("Evaluación visual de severidad", ["Baja", "Media", "Alta", "Crítica"])
+        severidad = st.selectbox("Evaluación visual de severidad (consultar guía arriba)", ["Baja", "Media", "Alta", "Crítica"])
         obs = st.text_area("Observaciones técnicas y causas probables")
         foto = st.file_uploader("Foto de evidencia", type=["jpg", "jpeg", "png", "webp"])
 
@@ -633,7 +656,7 @@ def tab_semaforo_y_graficas(proyecto_id):
         st.info("Cargá mediciones para ver los gráficos de tendencias.")
 
 # -----------------------------------------------------------------------------
-# TAB 4: PRESUPUESTO EDITABLE E INFORME EXCEL / PDF (CON BLOQUEO Y REGENERACIÓN)
+# TAB 4: PRESUPUESTO EDITABLE E INFORME EXCEL / PDF
 # -----------------------------------------------------------------------------
 def tab_presupuesto_y_pdf(proyecto):
     st.subheader("💰 Presupuesto de Reparación y Planilla de Costos")
@@ -684,75 +707,40 @@ def tab_presupuesto_y_pdf(proyecto):
                 "Punto": "P1 - Muro",
                 "Tipo de Patología": "Desprendimiento en Muros",
                 "Tareas a Realizar": "Picado de revoque existente con posterior colocación del nuevo hidrófugo y fino.",
-                "Cantidad (m² o m)": 15.0,
+                "Cantidad (m² o m)": 1.0,
                 "Mano de Obra ($)": 12500.0,
                 "Materiales/Equipos ($)": 8500.0
             })
         return pd.DataFrame(filas)
 
-    key_state = f"df_presupuesto_{proyecto['id']}"
+    df_base = construir_df_presupuesto_base()
 
-    if key_state not in st.session_state:
-        st.session_state[key_state] = construir_df_presupuesto_base()
+    st.write("✏️ **Podés modificar directamente las cantidades y costos en la siguiente tabla:**")
+    df_edited = st.data_editor(
+        df_base,
+        num_rows="dynamic",
+        use_container_width=True,
+        key=f"editor_presupuesto_{proyecto['id']}"
+    )
 
-    col_ctrl1, col_ctrl2 = st.columns([1, 1])
-
-    with col_ctrl1:
-        modo_edicion = st.checkbox("🔓 Activar modo edición", value=False, help="Activá esta casilla únicamente cuando necesites modificar montos, cantidades o descripciones.")
-
-    with col_ctrl2:
-        if st.button("🔄 Regenerar / Restablecer Tabla Original", help="Vuelve a generar la planilla desde cero con los puntos e inspecciones actuales."):
-            st.session_state[key_state] = construir_df_presupuesto_base()
-            st.success("¡Planilla restablecida a su versión inicial!")
-            st.rerun()
+    df_edited["Precio Unitario ($)"] = df_edited["Mano de Obra ($)"] + df_edited["Materiales/Equipos ($)"]
+    df_edited["Subtotal ($)"] = df_edited["Cantidad (m² o m)"] * df_edited["Precio Unitario ($)"]
 
     st.divider()
+    
+    total_general = df_edited["Subtotal ($)"].sum()
+    st.metric(label="💵 Costo Total Estimado de Reparación", value=f"${total_general:,.2f}")
 
-    if modo_edicion:
-        st.info("✏️ **Modo Edición Activado:** Podés hacer doble clic en las celdas para modificar valores o agregar/eliminar filas.")
-        df_editado = st.data_editor(
-            st.session_state[key_state],
-            num_rows="dynamic",
-            use_container_width=True,
-            key=f"editor_costos_{proyecto['id']}"
-        )
-        st.session_state[key_state] = df_editado.copy()
-    else:
-        st.caption("🔒 **Modo Protegido (Solo Lectura):** Activá la casilla '🔓 Activar modo edición' arriba para hacer cambios.")
-        df_editado = st.session_state[key_state].copy()
+    st.divider()
+    st.subheader("📄 Generación de Informe PDF")
 
-    df_calculado = df_editado.copy()
-    df_calculado["Precio Unitario ($)"] = df_calculado["Mano de Obra ($)"] + df_calculado["Materiales/Equipos ($)"]
-    df_calculado["Subtotal ($)"] = df_calculado["Cantidad (m² o m)"] * df_calculado["Precio Unitario ($)"]
-
-    if not modo_edicion:
-        st.dataframe(df_calculado, use_container_width=True)
-
-    total_presupuesto = df_calculado["Subtotal ($)"].sum()
-
-    st.markdown(f"### 💰 **Costo Total Estimado del Proyecto:** `${total_presupuesto:,.2f}`")
-
-    col_dl1, col_dl2 = st.columns(2)
-
-    with col_dl1:
-        buffer_excel = io.BytesIO()
-        with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
-            df_calculado.to_excel(writer, index=False, sheet_name='Presupuesto_Reparacion')
-        
-        st.download_button(
-            label="📊 Descargar Presupuesto en Excel (.xlsx)",
-            data=buffer_excel.getvalue(),
-            file_name=f"Presupuesto_Reparaciones_{proyecto['nombre'].replace(' ', '_')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-    with col_dl2:
-        if st.button("📄 Generar Informe Completo en PDF"):
-            pdf_bytes = generar_pdf_informe(proyecto, puntos, inspecciones_todas, df_calculado)
+    if st.button("🔴 Generar y Descargar Informe Técnico en PDF"):
+        with st.spinner("Procesando documento..."):
+            pdf_bytes = generar_pdf_informe(proyecto, puntos, inspecciones_todas, df_edited)
             st.download_button(
-                label="📥 Descargar PDF de la Evaluación",
+                label="📥 Descargar PDF Generado",
                 data=pdf_bytes,
-                file_name=f"Informe_Patologias_{proyecto['nombre'].replace(' ', '_')}.pdf",
+                file_name=f"Informe_Patologia_{proyecto['nombre'].replace(' ', '_')}.pdf",
                 mime="application/pdf"
             )
 
