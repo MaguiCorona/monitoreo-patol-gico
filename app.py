@@ -183,12 +183,14 @@ def evaluar_semagoro(tipo_patologia, ultimo_valor, severidad):
             return "🟢 BAJO", "Fisura superficial / de retracción. Monitorear periódicamente.", "green"
 
     elif tipo_patologia == "Humedad/Filtración":
-        if ultimo_valor >= 10.0 or severidad == "Crítica":
-            return "🔴 CRÍTICO", "Filtración severa con riesgo de degradación en armaduras o mampostería. Localizar fuga/membrana dañada de inmediato.", "red"
-        elif ultimo_valor >= 3.0 or severidad == "Alta":
-            return "🟡 MEDIO", "Humedad persistente. Reparar impermeabilización y mejorar ventilación.", "orange"
+        if severidad == "Crítica" or ultimo_valor >= 10.0:
+            return "🔴 CRÍTICO", "Filtración activa con goteo continuo, moho denso o desprendimiento generalizado. Riesgo de degradación de estructuras y ambiente insalubre. Reparar impermeabilización de inmediato.", "red"
+        elif severidad == "Alta":
+            return "🟠 ALTO", "Humedad de remonte capilar/eflorescencias severas o ampollamiento extendido. Intervenir barrera impermeable o impermeabilizar superficie afectada.", "orange"
+        elif severidad == "Media" or ultimo_valor >= 3.0:
+            return "🟡 MEDIO", "Mancha de humedad persistente con eflorescencias aisladas. Revisar sellados, albardillas o cañerías cercanas.", "orange"
         else:
-            return "🟢 BAJO", "Humedad residual o leve. Continuar seguimiento.", "green"
+            return "🟢 BAJO", "Mancha de humedad residual o seca sin eflorescencias activas. Monitorear evolución.", "green"
 
     elif tipo_patologia == "Afectación en Losa":
         if ultimo_valor >= 10.0 or severidad in ["Alta", "Crítica"]:
@@ -483,22 +485,22 @@ def tab_relevamiento(proyecto_id):
 
         * 🟢 **Baja:** 
           * **Fisuras:** Superficiales o de retracción hidráulica/pintura (ancho < 1 mm).
-          * **Humedad:** Manchas secas o residuales sin filtración activa.
+          * **Humedad:** Cambios leves de coloración en superficie, manchas residuales o secas sin humedad al tacto.
           * **Afectación / Desprendimiento:** Afecciones meramente estéticas sin desprendimiento del soporte.
 
         * 🟡 **Media:** 
           * **Fisuras:** Activas o de asentamiento inicial (ancho entre 1 mm y 3 mm).
-          * **Humedad:** Filtración recurrente con eflorescencias (salitre).
+          * **Humedad:** Humedad activa al tacto, mancha delimitada, aparición de salitre (eflorescencias leves) o ampollas puntuales en pintura.
           * **Afectación / Desprendimiento:** Revoque abombado o desprendimiento parcial en áreas reducidas (< 1.5 m²).
 
         * 🟠 **Alta:** 
           * **Fisuras:** Grietas pronunciadas (ancho entre 3 mm y 5 mm).
-          * **Humedad:** Filtración continua con goteo o degradación del material.
+          * **Humedad:** Humedad por remonte capilar/filtración continua, presencia de eflorescencias severas, desprendimiento de revestimiento por humedad o ampollado extendido.
           * **Afectación / Desprendimiento:** Áreas extensas (1.5 m² a 5 m²) o inicio de manchas de óxido en elementos de hormigón armado.
 
         * 🔴 **Crítica:** 
           * **Fisuras:** Grietas estructurales o pasantes (ancho > 5 mm o falla a cortante/flexión).
-          * **Humedad / Losa:** Corrosión severa con pérdida de sección en armaduras o expulsión de recubrimiento.
+          * **Humedad / Losa:** Filtración activa con goteo constante, formación de moho/hongos denso, o corrosión severa de armaduras expuestas por filtración.
           * **Riesgo:** Peligro inminente de caída de material en altura o compromiso de la seguridad estructural.
         """)
 
@@ -621,7 +623,7 @@ def tab_semaforo_y_graficas(proyecto_id):
                 
                 if color == "red":
                     st.error(f"Estado: {estado}")
-                elif color == "orange":
+                elif color in ["orange", "yellow"]:
                     st.warning(f"Estado: {estado}")
                 else:
                     st.success(f"Estado: {estado}")
