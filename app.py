@@ -736,60 +736,55 @@ def tab_presupuesto_y_pdf(proyecto):
 
     with col_btn1:
         if st.session_state[key_modo_edit]:
-            if st.button("🔒 Bloquear Edición", use_container_width=True):
+            if st.button("🔒 Bloquear Edición", key=f"btn_bloquear_{proyecto['id']}", use_container_width=True):
                 st.session_state[key_modo_edit] = False
                 st.rerun()
         else:
-            if st.button("✏️ Habilitar Edición", use_container_width=True):
+            if st.button("✏️ Habilitar Edición", key=f"btn_editar_{proyecto['id']}", use_container_width=True):
                 st.session_state[key_modo_edit] = True
                 st.rerun()
 
     with col_btn2:
-        if st.button("🔄 Renovar / Actualizar Planilla", use_container_width=True):
+        if st.button("🔄 Renovar / Actualizar Planilla", key=f"btn_renovar_{proyecto['id']}", use_container_width=True):
             st.session_state[key_df] = generar_df_cifras_base()
             st.success("Planilla actualizada con los datos e inspecciones más recientes.")
             st.rerun()
 
-    if st.session_state[key_modo_edit]:
-        st.warning("⚠️ **Modo Edición Activo:** Podés modificar las celdas, agregar o eliminar filas.")
-        df_editado = st.data_editor(
-            st.session_state[key_df],
-            num_rows="dynamic",
-            use_container_width=True,
-            key=f"editor_{proyecto['id']}",
-            column_config={
-                "Materiales ($)": st.column_config.NumberColumn(format="$ %.2f"),
-                "Mano de Obra ($)": st.column_config.NumberColumn(format="$ %.2f"),
-                "Equipos ($)": st.column_config.NumberColumn(format="$ %.2f"),
-                "Gastos Gen. / Benef. (%)": st.column_config.NumberColumn(format="%.1f %%"),
-                "Coste Directo ($)": st.column_config.NumberColumn(format="$ %.2f", disabled=True),
-                "Subtotal ($)": st.column_config.NumberColumn(format="$ %.2f", disabled=True),
-                "Cantidad": st.column_config.NumberColumn(format="%.2f")
-            }
-        )
-        
-        # Recálculo de las columnas derivadas
-        df_editado["Coste Directo ($)"] = (
-            df_editado["Materiales ($)"] + df_editado["Mano de Obra ($)"] + df_editado["Equipos ($)"]
-        ) * df_editado["Cantidad"]
-        
-        df_editado["Subtotal ($)"] = df_editado["Coste Directo ($)"] * (1 + (df_editado["Gastos Gen. / Benef. (%)"] / 100.0))
-        st.session_state[key_df] = df_editado
+    # Cartel indicativo de estado
+    es_editable = st.session_state[key_modo_edit]
+    if es_editable:
+        st.warning("⚠️ **Modo Edición Activo:** Podés modificar las celdas directamente en la tabla.")
     else:
-        st.info("🔒 **Planilla Protegida:** Para hacer cambios o cargar costos manualmente, tocá el botón **✏️ Habilitar Edición**.")
-        st.dataframe(
-            st.session_state[key_df],
-            use_container_width=True,
-            column_config={
-                "Materiales ($)": st.column_config.NumberColumn(format="$ %.2f"),
-                "Mano de Obra ($)": st.column_config.NumberColumn(format="$ %.2f"),
-                "Equipos ($)": st.column_config.NumberColumn(format="$ %.2f"),
-                "Gastos Gen. / Benef. (%)": st.column_config.NumberColumn(format="%.1f %%"),
-                "Coste Directo ($)": st.column_config.NumberColumn(format="$ %.2f"),
-                "Subtotal ($)": st.column_config.NumberColumn(format="$ %.2f"),
-                "Cantidad": st.column_config.NumberColumn(format="%.2f")
-            }
-        )
+        st.info("🔒 **Planilla Protegida:** Tocá '✏️ Habilitar Edición' para editar montos o tareas.")
+
+    # Se usa UN SOLO data_editor evitando la alternancia entre componentes DOM
+    df_resultado = st.data_editor(
+        st.session_state[key_df],
+        disabled=not es_editable,
+        num_rows="dynamic" if es_editable else "fixed",
+        use_container_width=True,
+        key=f"editor_estatico_{proyecto['id']}_{es_editable}",
+        column_config={
+            "Materiales ($)": st.column_config.NumberColumn(format="$ %.2f"),
+            "Mano de Obra ($)": st.column_config.NumberColumn(format="$ %.2f"),
+            "Equipos ($)": st.column_config.NumberColumn(format="$ %.2f"),
+            "Gastos Gen. / Benef. (%)": st.column_config.NumberColumn(format="%.1f %%"),
+            "Coste Directo ($)": st.column_config.NumberColumn(format="$ %.2f", disabled=True),
+            "Subtotal ($)": st.column_config.NumberColumn(format="$ %.2f", disabled=True),
+            "Cantidad": st.column_config.NumberColumn(format="%.2f")
+        }
+    )
+
+    # Recálculo de totales si estuvo en modo edición
+    if es_editable and not df_resultado.empty:
+        df_resultado["Coste Directo ($)"] = (
+            df_resultado["Materiales ($)"].fillna(0) + 
+            df_resultado["Mano de Obra ($)"].fillna(0) + 
+            df_resultado["Equipos ($)"].fillna(0)
+        ) * df_resultado["Cantidad"].fillna(0)
+        
+        df_resultado["Subtotal ($)"] = df_resultado["Coste Directo ($)"] * (1 + (df_resultado["Gastos Gen. / Benef. (%)"].fillna(0) / 100.0))
+        st.session_state[key_df] = df_resultado
 
     df_actual = st.session_state[key_df]
     total_general = df_actual["Subtotal ($)"].sum() if "Subtotal ($)" in df_actual and not df_actual.empty else 0.0
@@ -799,7 +794,7 @@ def tab_presupuesto_y_pdf(proyecto):
     st.divider()
     st.subheader("📄 Generación de Informe PDF Técnicamente Detallado")
 
-    if st.button("🖨️ Generar Informe en PDF"):
+    if st.button("🖨️ Generar Informe en PDF", key=f"btn_pdf_{proyecto['id']}"):
         with st.spinner("Generando documento PDF..."):
             try:
                 pdf_bytes = generar_pdf_informe(proyecto, puntos, inspecciones_todas, df_actual)
@@ -807,7 +802,8 @@ def tab_presupuesto_y_pdf(proyecto):
                     label="📥 Descargar Informe PDF",
                     data=pdf_bytes,
                     file_name=f"Informe_Tecnico_{proyecto['nombre'].replace(' ', '_')}.pdf",
-                    mime="application/pdf"
+                    mime="application/pdf",
+                    key=f"dl_pdf_{proyecto['id']}"
                 )
             except Exception as e:
                 st.error(f"Error al generar el documento PDF: {e}")
