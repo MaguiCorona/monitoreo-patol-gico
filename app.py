@@ -63,7 +63,7 @@ def crear_plano(proyecto_id, nombre, url_archivo):
     return supabase.table("planos").insert({"proyecto_id": proyecto_id, "nombre": nombre, "ruta_archivo": url_archivo}).execute()
 
 def obtener_puntos(plano_id=None, proyecto_id=None):
-    query = supabase.table("puntos").select("*")
+    query = supabase.table("puntos").select("*, planos(nombre)")
     if proyecto_id:
         query = query.eq("proyecto_id", proyecto_id)
     if plano_id:
@@ -332,8 +332,9 @@ def main():
 
     st.header(f"🏢 Proyecto: {proyecto_actual['nombre']}")
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📌 Planos y Puntos", 
+        "📊 Tabla General de Puntos",
         "📝 Relevamiento e Inspección", 
         "🚥 Semáforo & Evolución", 
         "💰 Presupuesto e Informe PDF"
@@ -343,12 +344,15 @@ def main():
         tab_planos_y_puntos(proyecto_id)
 
     with tab2:
-        tab_relevamiento(proyecto_id)
+        tab_gestion_puntos_excel(proyecto_id)
 
     with tab3:
-        tab_semaforo_y_graficas(proyecto_id)
+        tab_relevamiento(proyecto_id)
 
     with tab4:
+        tab_semaforo_y_graficas(proyecto_id)
+
+    with tab5:
         tab_presupuesto_y_pdf(proyecto_actual)
 
 # -----------------------------------------------------------------------------
@@ -400,7 +404,6 @@ def tab_planos_y_puntos(proyecto_id):
         plano_sel_nombre = st.selectbox("Plano Activo", [p["nombre"] for p in planos])
         plano_actual = next(p for p in planos if p["nombre"] == plano_sel_nombre)
 
-    # CORRECCIÓN CLAVE: Filtrar explícitamente por plano_id y proyecto_id
     puntos = obtener_puntos(plano_id=plano_actual["id"], proyecto_id=proyecto_id)
     img_base = cargar_imagen_plano(plano_actual["ruta_archivo"])
 
@@ -451,48 +454,126 @@ def tab_planos_y_puntos(proyecto_id):
             except Exception as e:
                 st.error(f"❌ Error de Supabase al guardar el punto: {e}")
 
-        if puntos:
-            st.divider()
-            st.subheader("✏️ Editar / Eliminar Puntos Existentes")
-            
-            opciones_puntos = {f"{p['etiqueta']} ({p['tipo_patologia']})": p for p in puntos}
-            punto_sel_label = st.selectbox("Seleccionar punto a editar/eliminar", list(opciones_puntos.keys()))
-            punto_a_editar = opciones_puntos[punto_sel_label]
+# -----------------------------------------------------------------------------
+# TAB 2: TABLA GENERAL DE PUNTOS (ESTILO EXCEL / EDICIÓN Y ELIMINACIÓN)
+# -----------------------------------------------------------------------------
+def tab_gestion_puntos_excel(proyecto_id):
+    st.subheader("📊 Planilla General de Puntos y Patologías")
+    st.caption("Visualizá, edita masivamente o eliminá puntos duplicados directamente desde esta tabla interactiva.")
 
-            with st.expander("Modificar datos de este punto"):
-                edit_etiqueta = st.text_input("Editar Etiqueta", value=punto_a_editar["etiqueta"], key="edit_etiq")
-                
-                idx_tipo = tipos_opciones.index(punto_a_editar["tipo_patologia"]) if punto_a_editar["tipo_patologia"] in tipos_opciones else 0
-                edit_tipo = st.selectbox("Editar Tipo de Patología", tipos_opciones, index=idx_tipo, key="edit_tipo")
-                
-                edit_x = st.number_input("Editar Posición X (%)", 0.0, 100.0, float(punto_a_editar["x_pct"]), 0.1, key="edit_x")
-                edit_y = st.number_input("Editar Posición Y (%)", 0.0, 100.0, float(punto_a_editar["y_pct"]), 0.1, key="edit_y")
+    puntos = obtener_puntos(proyecto_id=proyecto_id)
+    if not puntos:
+        st.info("No hay puntos registrados en este proyecto.")
+        return
 
-                col_b1, col_b2 = st.columns(2)
-                with col_b1:
-                    if st.button("💾 Guardar Cambios"):
-                        try:
-                            actualizar_punto(punto_a_editar["id"], edit_x, edit_y, edit_etiqueta, edit_tipo)
-                            st.success("¡Punto actualizado!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error al actualizar: {e}")
+    filas = []
+    for p in puntos:
+        plano_nom = p.get("planos", {}).get("nombre", "Sin Plano") if p.get("planos") else "Sin Plano"
+        fecha_creacion = p.get("creado_en", "")
+        if fecha_creacion:
+            try:
+                fecha_creacion = fecha_creacion.split("T")[0]
+            except Exception:
+                pass
 
-                with col_b2:
-                    if st.button("🗑️ Eliminar Punto", type="primary"):
-                        try:
-                            eliminar_punto(punto_a_editar["id"])
-                            st.warning("Punto eliminado.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"❌ Error al eliminar: {e}")
+        filas.append({
+            "🗑️ Eliminar": False,
+            "ID Punto": p["id"],
+            "Planta / Plano": plano_nom,
+            "Etiqueta": p["etiqueta"],
+            "Tipo de Patología": p["tipo_patologia"],
+            "Posición X (%)": float(p["x_pct"]),
+            "Posición Y (%)": float(p["y_pct"]),
+            "Fecha Subida": fecha_creacion
+        })
 
-            st.write("📍 **Tabla de Puntos:**")
-            df_pt = pd.DataFrame(puntos)[["etiqueta", "tipo_patologia", "x_pct", "y_pct"]]
-            st.dataframe(df_pt, use_container_width=True)
+    df_puntos = pd.DataFrame(filas)
+
+    key_modo_edit_puntos = f"edit_puntos_modo_{proyecto_id}"
+    if key_modo_edit_puntos not in st.session_state:
+        st.session_state[key_modo_edit_puntos] = False
+
+    col1, col2, col_vacia = st.columns([1.5, 2, 4])
+
+    with col1:
+        if st.session_state[key_modo_edit_puntos]:
+            if st.button("🔒 Bloquear Edición", key=f"btn_lock_pts_{proyecto_id}"):
+                st.session_state[key_modo_edit_puntos] = False
+                st.rerun()
+        else:
+            if st.button("✏️ Habilitar Edición", key=f"btn_edit_pts_{proyecto_id}"):
+                st.session_state[key_modo_edit_puntos] = True
+                st.rerun()
+
+    modo_editable = st.session_state[key_modo_edit_puntos]
+
+    if modo_editable:
+        st.warning("⚠️ **Modo Edición Activo:** Podés modificar las celdas directamente o marcar '🗑️ Eliminar' para borrar puntos duplicados.")
+    else:
+        st.info("🔒 **Planilla Protegida:** Presioná '✏️ Habilitar Edición' para realizar modificaciones.")
+
+    tipos_opciones = ["Fisura/Grieta", "Humedad/Filtración", "Afectación en Losa", "Desprendimiento en Muros"]
+
+    df_editado = st.data_editor(
+        df_puntos,
+        disabled=not modo_editable,
+        use_container_width=True,
+        key=f"editor_puntos_tabla_{proyecto_id}",
+        column_config={
+            "🗑️ Eliminar": st.column_config.CheckboxColumn(
+                "🗑️ Eliminar",
+                help="Marcá las casillas de los puntos que quieras eliminar.",
+                default=False
+            ),
+            "ID Punto": st.column_config.TextColumn("ID Punto", disabled=True),
+            "Planta / Plano": st.column_config.TextColumn("Planta / Plano", disabled=True),
+            "Fecha Subida": st.column_config.TextColumn("Fecha Subida", disabled=True),
+            "Tipo de Patología": st.column_config.SelectboxColumn(
+                "Tipo de Patología",
+                options=tipos_opciones,
+                required=True
+            ),
+            "Posición X (%)": st.column_config.NumberColumn("Posición X (%)", format="%.2f", min_value=0.0, max_value=100.0),
+            "Posición Y (%)": st.column_config.NumberColumn("Posición Y (%)", format="%.2f", min_value=0.0, max_value=100.0)
+        }
+    )
+
+    with col2:
+        if modo_editable:
+            if st.button("💾 Actualizar y Guardar Cambios", type="primary", key=f"btn_save_pts_{proyecto_id}"):
+                puntos_a_eliminar = df_editado[df_editado["🗑️ Eliminar"] == True]
+                puntos_a_guardar = df_editado[df_editado["🗑️ Eliminar"] == False]
+
+                errores = 0
+
+                # 1. Eliminar marcados
+                for _, row in puntos_a_eliminar.iterrows():
+                    try:
+                        eliminar_punto(row["ID Punto"])
+                    except Exception as e:
+                        errores += 1
+                        st.error(f"Error al eliminar {row['Etiqueta']}: {e}")
+
+                # 2. Actualizar editados
+                for _, row in puntos_a_guardar.iterrows():
+                    try:
+                        actualizar_punto(
+                            punto_id=row["ID Punto"],
+                            x_pct=row["Posición X (%)"],
+                            y_pct=row["Posición Y (%)"],
+                            etiqueta=row["Etiqueta"],
+                            tipo_patologia=row["Tipo de Patología"]
+                        )
+                    except Exception as e:
+                        errores += 1
+                        st.error(f"Error al actualizar {row['Etiqueta']}: {e}")
+
+                if errores == 0:
+                    st.success("¡Base de datos de puntos actualizada exitosamente!")
+                    st.rerun()
 
 # -----------------------------------------------------------------------------
-# TAB 2: RELEVAMIENTO E INSPECCIONES
+# TAB 3: RELEVAMIENTO E INSPECCIONES
 # -----------------------------------------------------------------------------
 def tab_relevamiento(proyecto_id):
     puntos = obtener_puntos(proyecto_id=proyecto_id)
@@ -603,7 +684,7 @@ def tab_relevamiento(proyecto_id):
                                     st.error(f"Error al eliminar inspección: {e}")
 
 # -----------------------------------------------------------------------------
-# TAB 3: SEMÁFORO Y GRÁFICAS DE EVOLUCIÓN (OPTIMIZADA)
+# TAB 4: SEMÁFORO Y GRÁFICAS DE EVOLUCIÓN
 # -----------------------------------------------------------------------------
 def tab_semaforo_y_graficas(proyecto_id):
     st.subheader("🚥 Diagnóstico de Riesgo y Semáforo Patológico")
@@ -654,7 +735,6 @@ def tab_semaforo_y_graficas(proyecto_id):
             })
         df_chart = pd.DataFrame(data)
 
-        # --- FILTRO MULTISELECCIÓN ---
         todos_los_puntos = sorted(df_chart["Punto"].unique())
         
         col_filtro1, col_filtro2 = st.columns([3, 1])
@@ -662,21 +742,19 @@ def tab_semaforo_y_graficas(proyecto_id):
             puntos_seleccionados = st.multiselect(
                 "Filtrar puntos a mostrar en el gráfico:",
                 options=todos_los_puntos,
-                default=todos_los_puntos, # Muestra todos por defecto
+                default=todos_los_puntos,
                 help="Eliminá o agregá puntos para limpiar la vista."
             )
         
         with col_filtro2:
-            st.write("") # Espaciado vertical
+            st.write("")
             st.write("") 
             if st.button("Deseleccionar todos"):
                 puntos_seleccionados = []
 
-        # Filtrar DataFrame según la selección del usuario
         df_filtrado = df_chart[df_chart["Punto"].isin(puntos_seleccionados)]
 
         if not df_filtrado.empty:
-            # Generar gráfico con Plotly Express
             fig = plotly_exp.line(
                 df_filtrado, 
                 x="Fecha", 
@@ -686,14 +764,13 @@ def tab_semaforo_y_graficas(proyecto_id):
                 title="Evolución de Medición en el Tiempo"
             )
             
-            # --- ESTILIZADO DE LÍNEAS Y PUNTOS ---
             fig.update_traces(
-                line=dict(width=2),        # Líneas más finas (por defecto traen grosor alto)
-                marker=dict(size=6)        # Puntos de medición más sutiles
+                line=dict(width=2),
+                marker=dict(size=6)
             )
             
             fig.update_layout(
-                hovermode="x unified",     # Muestra los valores de todos los puntos juntos al pasar el mouse
+                hovermode="x unified",
                 legend_title_text="Puntos",
                 margin=dict(l=10, r=10, t=40, b=10)
             )
@@ -705,7 +782,7 @@ def tab_semaforo_y_graficas(proyecto_id):
         st.info("Cargá mediciones para ver los gráficos de tendencias.")
 
 # -----------------------------------------------------------------------------
-# TAB 4: PRESUPUESTO EDITABLE E INFORME PDF (ESTRUCTURA CIFRAS)
+# TAB 5: PRESUPUESTO EDITABLE E INFORME PDF
 # -----------------------------------------------------------------------------
 def tab_presupuesto_y_pdf(proyecto):
     st.subheader("💰 Presupuesto de Reparación y Planilla de Costos")
