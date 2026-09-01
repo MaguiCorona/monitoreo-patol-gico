@@ -64,10 +64,10 @@ def crear_plano(proyecto_id, nombre, url_archivo):
 
 def obtener_puntos(plano_id=None, proyecto_id=None):
     query = supabase.table("puntos").select("*")
-    if plano_id:
-        query = query.eq("plano_id", plano_id)
     if proyecto_id:
         query = query.eq("proyecto_id", proyecto_id)
+    if plano_id:
+        query = query.eq("plano_id", plano_id)
     res = query.order("creado_en", desc=False).execute()
     return res.data if res.data else []
 
@@ -99,12 +99,12 @@ def obtener_inspecciones(punto_id=None, proyecto_id=None):
         res = supabase.table("inspecciones").select("*").eq("punto_id", punto_id).order("fecha", desc=False).execute()
         return res.data if res.data else []
     
+    if proyecto_id:
+        res = supabase.table("inspecciones").select("*, puntos!inner(etiqueta, tipo_patologia, proyecto_id)").eq("puntos.proyecto_id", proyecto_id).order("fecha", desc=False).execute()
+        return res.data if res.data else []
+        
     res = supabase.table("inspecciones").select("*, puntos!inner(etiqueta, tipo_patologia, proyecto_id)").order("fecha", desc=False).execute()
-    if res.data:
-        if proyecto_id:
-            return [i for i in res.data if i["puntos"]["proyecto_id"] == proyecto_id]
-        return res.data
-    return []
+    return res.data if res.data else []
 
 def crear_inspeccion(punto_id, fecha, valor, unidad, severidad, observacion, url_foto):
     data = {
@@ -400,7 +400,8 @@ def tab_planos_y_puntos(proyecto_id):
         plano_sel_nombre = st.selectbox("Plano Activo", [p["nombre"] for p in planos])
         plano_actual = next(p for p in planos if p["nombre"] == plano_sel_nombre)
 
-    puntos = obtener_puntos(plano_id=plano_actual["id"])
+    # CORRECCIÓN CLAVE: Filtrar explícitamente por plano_id y proyecto_id
+    puntos = obtener_puntos(plano_id=plano_actual["id"], proyecto_id=proyecto_id)
     img_base = cargar_imagen_plano(plano_actual["ruta_archivo"])
 
     if "clic_x" not in st.session_state:
@@ -675,7 +676,6 @@ def tab_presupuesto_y_pdf(proyecto):
     puntos = obtener_puntos(proyecto_id=proyecto["id"])
     inspecciones_todas = obtener_inspecciones(proyecto_id=proyecto["id"])
 
-    # Función interna para reconstruir el DataFrame con la estructura de Cifras
     def generar_df_cifras_base():
         filas = []
         precios_defecto = {
@@ -721,7 +721,6 @@ def tab_presupuesto_y_pdf(proyecto):
         st.info("No hay puntos registrados en este proyecto para generar presupuesto.")
         return
 
-    # Inicialización del estado en session_state
     key_df = f"df_presupuesto_{proyecto['id']}"
     key_modo_edit = f"modo_edicion_{proyecto['id']}"
 
@@ -731,7 +730,6 @@ def tab_presupuesto_y_pdf(proyecto):
     if key_df not in st.session_state:
         st.session_state[key_df] = generar_df_cifras_base()
 
-    # Barra de botones de control
     col_btn1, col_btn2, col_vacia = st.columns([1.5, 2, 4])
 
     with col_btn1:
@@ -750,20 +748,18 @@ def tab_presupuesto_y_pdf(proyecto):
             st.success("Planilla actualizada con los datos e inspecciones más recientes.")
             st.rerun()
 
-    # Cartel indicativo de estado
     es_editable = st.session_state[key_modo_edit]
     if es_editable:
         st.warning("⚠️ **Modo Edición Activo:** Podés modificar las celdas directamente en la tabla.")
     else:
         st.info("🔒 **Planilla Protegida:** Tocá '✏️ Habilitar Edición' para editar montos o tareas.")
 
-    # Se usa UN SOLO data_editor evitando la alternancia entre componentes DOM
     df_resultado = st.data_editor(
         st.session_state[key_df],
         disabled=not es_editable,
         num_rows="dynamic" if es_editable else "fixed",
         use_container_width=True,
-        key=f"editor_estatico_{proyecto['id']}_{es_editable}",
+        key=f"editor_fijo_{proyecto['id']}",
         column_config={
             "Materiales ($)": st.column_config.NumberColumn(format="$ %.2f"),
             "Mano de Obra ($)": st.column_config.NumberColumn(format="$ %.2f"),
@@ -775,7 +771,6 @@ def tab_presupuesto_y_pdf(proyecto):
         }
     )
 
-    # Recálculo de totales si estuvo en modo edición
     if es_editable and not df_resultado.empty:
         df_resultado["Coste Directo ($)"] = (
             df_resultado["Materiales ($)"].fillna(0) + 
