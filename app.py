@@ -603,7 +603,7 @@ def tab_relevamiento(proyecto_id):
                                     st.error(f"Error al eliminar inspección: {e}")
 
 # -----------------------------------------------------------------------------
-# TAB 3: SEMÁFORO Y GRÁFICAS DE EVOLUCIÓN
+# TAB 3: SEMÁFORO Y GRÁFICAS DE EVOLUCIÓN (OPTIMIZADA)
 # -----------------------------------------------------------------------------
 def tab_semaforo_y_graficas(proyecto_id):
     st.subheader("🚥 Diagnóstico de Riesgo y Semáforo Patológico")
@@ -654,15 +654,53 @@ def tab_semaforo_y_graficas(proyecto_id):
             })
         df_chart = pd.DataFrame(data)
 
-        fig = plotly_exp.line(
-            df_chart, 
-            x="Fecha", 
-            y="Valor", 
-            color="Punto", 
-            markers=True,
-            title="Evolución de Medición en el Tiempo"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        # --- FILTRO MULTISELECCIÓN ---
+        todos_los_puntos = sorted(df_chart["Punto"].unique())
+        
+        col_filtro1, col_filtro2 = st.columns([3, 1])
+        with col_filtro1:
+            puntos_seleccionados = st.multiselect(
+                "Filtrar puntos a mostrar en el gráfico:",
+                options=todos_los_puntos,
+                default=todos_los_puntos, # Muestra todos por defecto
+                help="Eliminá o agregá puntos para limpiar la vista."
+            )
+        
+        with col_filtro2:
+            st.write("") # Espaciado vertical
+            st.write("") 
+            if st.button("Deseleccionar todos"):
+                puntos_seleccionados = []
+
+        # Filtrar DataFrame según la selección del usuario
+        df_filtrado = df_chart[df_chart["Punto"].isin(puntos_seleccionados)]
+
+        if not df_filtrado.empty:
+            # Generar gráfico con Plotly Express
+            fig = plotly_exp.line(
+                df_filtrado, 
+                x="Fecha", 
+                y="Valor", 
+                color="Punto", 
+                markers=True,
+                title="Evolución de Medición en el Tiempo"
+            )
+            
+            # --- ESTILIZADO DE LÍNEAS Y PUNTOS ---
+            fig.update_traces(
+                line=dict(width=2),        # Líneas más finas (por defecto traen grosor alto)
+                marker=dict(size=6)        # Puntos de medición más sutiles
+            )
+            
+            fig.update_layout(
+                hovermode="x unified",     # Muestra los valores de todos los puntos juntos al pasar el mouse
+                legend_title_text="Puntos",
+                margin=dict(l=10, r=10, t=40, b=10)
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Seleccioná al menos un punto en el filtro para desplegar la gráfica.")
     else:
         st.info("Cargá mediciones para ver los gráficos de tendencias.")
 
