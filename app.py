@@ -82,15 +82,13 @@ def crear_punto(proyecto_id, plano_id, x_pct, y_pct, etiqueta, tipo_patologia):
     }
     return supabase.table("puntos").insert(data).execute()
 
-def actualizar_punto(punto_id, x_pct, y_pct, etiqueta, tipo_patologia, plano_id=None):
+def actualizar_punto(punto_id, x_pct, y_pct, etiqueta, tipo_patologia):
     data = {
         "x_pct": float(x_pct),
         "y_pct": float(y_pct),
         "etiqueta": etiqueta,
         "tipo_patologia": tipo_patologia
     }
-    if plano_id:
-        data["plano_id"] = plano_id
     return supabase.table("puntos").update(data).eq("id", punto_id).execute()
 
 def eliminar_punto(punto_id):
@@ -457,30 +455,20 @@ def tab_planos_y_puntos(proyecto_id):
                 st.error(f"❌ Error de Supabase al guardar el punto: {e}")
 
 # -----------------------------------------------------------------------------
-# TAB 2: TABLA GENERAL DE PUNTOS (EDITABLE CON SELECCIÓN DE PLANTA/PLANO)
+# TAB 2: TABLA GENERAL DE PUNTOS (ESTILO EXCEL / EDICIÓN Y ELIMINACIÓN)
 # -----------------------------------------------------------------------------
 def tab_gestion_puntos_excel(proyecto_id):
     st.subheader("📊 Planilla General de Puntos y Patologías")
     st.caption("Visualizá, edita masivamente o eliminá puntos duplicados directamente desde esta tabla interactiva.")
 
     puntos = obtener_puntos(proyecto_id=proyecto_id)
-    planos = obtener_planos(proyecto_id=proyecto_id)
-
     if not puntos:
         st.info("No hay puntos registrados en este proyecto.")
         return
 
-    # Mapeo entre ID y Nombre de planos para permitir cambio dinámico
-    mapa_planos_id_a_nombre = {pl["id"]: pl["nombre"] for pl in planos}
-    mapa_planos_nombre_a_id = {pl["nombre"]: pl["id"] for pl in planos}
-    nombres_planos = list(mapa_planos_nombre_a_id.keys())
-
     filas = []
     for p in puntos:
         plano_nom = p.get("planos", {}).get("nombre", "Sin Plano") if p.get("planos") else "Sin Plano"
-        if plano_nom not in nombres_planos and nombres_planos:
-            plano_nom = nombres_planos[0]
-
         fecha_creacion = p.get("creado_en", "")
         if fecha_creacion:
             try:
@@ -520,7 +508,7 @@ def tab_gestion_puntos_excel(proyecto_id):
     modo_editable = st.session_state[key_modo_edit_puntos]
 
     if modo_editable:
-        st.warning("⚠️ **Modo Edición Activo:** Podés modificar planta, datos o marcar '🗑️ Eliminar' para borrar puntos.")
+        st.warning("⚠️ **Modo Edición Activo:** Podés modificar las celdas directamente o marcar '🗑️ Eliminar' para borrar puntos duplicados.")
     else:
         st.info("🔒 **Planilla Protegida:** Presioná '✏️ Habilitar Edición' para realizar modificaciones.")
 
@@ -538,11 +526,7 @@ def tab_gestion_puntos_excel(proyecto_id):
                 default=False
             ),
             "ID Punto": st.column_config.TextColumn("ID Punto", disabled=True),
-            "Planta / Plano": st.column_config.SelectboxColumn(
-                "Planta / Plano",
-                options=nombres_planos,
-                required=True
-            ),
+            "Planta / Plano": st.column_config.TextColumn("Planta / Plano", disabled=True),
             "Fecha Subida": st.column_config.TextColumn("Fecha Subida", disabled=True),
             "Tipo de Patología": st.column_config.SelectboxColumn(
                 "Tipo de Patología",
@@ -570,17 +554,15 @@ def tab_gestion_puntos_excel(proyecto_id):
                         errores += 1
                         st.error(f"Error al eliminar {row['Etiqueta']}: {e}")
 
-                # 2. Actualizar editados (incluyendo cambio de plano/planta)
+                # 2. Actualizar editados
                 for _, row in puntos_a_guardar.iterrows():
                     try:
-                        plano_id_nuevo = mapa_planos_nombre_a_id.get(row["Planta / Plano"])
                         actualizar_punto(
                             punto_id=row["ID Punto"],
                             x_pct=row["Posición X (%)"],
                             y_pct=row["Posición Y (%)"],
                             etiqueta=row["Etiqueta"],
-                            tipo_patologia=row["Tipo de Patología"],
-                            plano_id=plano_id_nuevo
+                            tipo_patologia=row["Tipo de Patología"]
                         )
                     except Exception as e:
                         errores += 1
